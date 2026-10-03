@@ -57,6 +57,7 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	functionTools := apicompat.FunctionToolNames(effectiveTools)
 	toolSearch := apicompat.HasToolSearchTool(effectiveTools)
 	namespaceTools := apicompat.NamespaceToolNames(effectiveTools)
+	plaintextCollaboration := account.IsOpenAIResponsesCollaborationEnabled()
 
 	// 自愈回写：历史里带明文 summary 的 reasoning item 刷新进缓存，覆盖 Redis
 	// 被 flush / 跨实例漂移后同 id 的 encrypted-only 副本无法再取明文的情况。
@@ -137,9 +138,9 @@ func (s *OpenAIGatewayService) forwardResponsesViaRawChatCompletions(
 	}
 
 	if clientStream {
-		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+		return s.streamChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, plaintextCollaboration, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 	}
-	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
+	return s.bufferChatCompletionsAsResponses(c, resp, originalModel, customTools, functionTools, toolSearch, namespaceTools, plaintextCollaboration, billingModel, upstreamModel, reasoningEffort, serviceTier, startTime)
 }
 
 func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
@@ -150,6 +151,7 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	functionTools map[string]bool,
 	toolSearch bool,
 	namespaceTools map[string]apicompat.NamespacedToolName,
+	plaintextCollaboration bool,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -161,7 +163,9 @@ func (s *OpenAIGatewayService) bufferChatCompletionsAsResponses(
 	if err != nil {
 		return nil, err
 	}
-	responsesResp := apicompat.ChatCompletionsResponseToResponses(ccResp, originalModel, customTools, functionTools, toolSearch, namespaceTools)
+	responsesResp := apicompat.ChatCompletionsResponseToResponsesWithOptions(ccResp, originalModel, customTools, functionTools, toolSearch, namespaceTools, &apicompat.ChatCompletionsToResponsesOptions{
+		PlaintextCollaboration: plaintextCollaboration,
+	})
 	s.cacheReasoningItemsFromOutput(responsesResp.Output)
 
 	if s.responseHeaderFilter != nil {
@@ -192,6 +196,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	functionTools map[string]bool,
 	toolSearch bool,
 	namespaceTools map[string]apicompat.NamespacedToolName,
+	plaintextCollaboration bool,
 	billingModel string,
 	upstreamModel string,
 	reasoningEffort *string,
@@ -206,6 +211,7 @@ func (s *OpenAIGatewayService) streamChatCompletionsAsResponses(
 	state.FunctionTools = functionTools
 	state.ToolSearchDeclared = toolSearch
 	state.NamespaceTools = namespaceTools
+	state.PlaintextCollaboration = plaintextCollaboration
 	clientDisconnected := false
 
 	writeEvents := func(events []apicompat.ResponsesStreamEvent) {

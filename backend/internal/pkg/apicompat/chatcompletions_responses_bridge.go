@@ -1335,6 +1335,18 @@ func extractCustomToolCallInput(arguments string) string {
 // 的调用会还原为 tool_search_call 项；namespaceTools 是 namespace 子工具的摊平名
 // 映射（见 NamespaceToolNames），命中的调用还原为带 namespace 字段的 function_call 项。
 func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model string, customTools, functionTools map[string]bool, toolSearch bool, namespaceTools map[string]NamespacedToolName) *ResponsesResponse {
+	return ChatCompletionsResponseToResponsesWithOptions(resp, model, customTools, functionTools, toolSearch, namespaceTools, nil)
+}
+
+// ChatCompletionsToResponsesOptions carries request-scoped return policies.
+type ChatCompletionsToResponsesOptions struct {
+	PlaintextCollaboration bool
+}
+
+// ChatCompletionsResponseToResponsesWithOptions applies the account's plaintext
+// collaboration policy after restoring the original namespace and tool name.
+// Nil options keep the default response conversion.
+func ChatCompletionsResponseToResponsesWithOptions(resp *ChatCompletionsResponse, model string, customTools, functionTools map[string]bool, toolSearch bool, namespaceTools map[string]NamespacedToolName, opts *ChatCompletionsToResponsesOptions) *ResponsesResponse {
 	id := ""
 	if resp != nil {
 		id = resp.ID
@@ -1380,10 +1392,31 @@ func ChatCompletionsResponseToResponses(resp *ChatCompletionsResponse, model str
 	if len(out.Output) == 0 {
 		out.Output = []ResponsesOutput{emptyResponsesMessageOutput()}
 	}
+	if opts != nil && opts.PlaintextCollaboration {
+		for i := range out.Output {
+			item := &out.Output[i]
+			if item.Type == "function_call" {
+				item.EncryptedFunctionArgs = plaintextCollaborationFunctionArgs(true, item.Namespace, item.Name)
+			}
+		}
+	}
 	if resp.Usage != nil {
 		out.Usage = ChatUsageToResponsesUsage(resp.Usage)
 	}
 	return out
+}
+
+func plaintextCollaborationFunctionArgs(enabled bool, namespace, name string) *[]json.RawMessage {
+	if !enabled || namespace != "collaboration" {
+		return nil
+	}
+	switch name {
+	case "spawn_agent", "send_message", "followup_task":
+		args := []json.RawMessage{}
+		return &args
+	default:
+		return nil
+	}
 }
 
 func chatServiceTier(resp *ChatCompletionsResponse) string {
@@ -1614,6 +1647,10 @@ type ChatCompletionsToResponsesStreamState struct {
 	// NamespaceToolNames）。命中的调用还原为带 namespace 字段的 function_call 项，
 	// codex 按 namespace+name 路由。
 	NamespaceTools map[string]NamespacedToolName
+
+	// PlaintextCollaboration explicitly marks collaboration task arguments as
+	// plaintext in added/done items and the final response output.
+	PlaintextCollaboration bool
 
 	// toolIsCustom 记录每个工具调用宣告时的类型判定，保证 added/done 事件的
 	// 项类型一致。
@@ -2040,12 +2077,13 @@ func announceChatToolItem(
 	events := []ResponsesStreamEvent{chatToResponsesEvent(state, "response.output_item.added", &ResponsesStreamEvent{
 		OutputIndex: state.ToolOutputIndex[idx],
 		Item: &ResponsesOutput{
-			Type:      itemType,
-			ID:        state.ToolItemIDs[idx],
-			CallID:    stored.ID,
-			Name:      itemName,
-			Namespace: itemNamespace,
-			Status:    "in_progress",
+			Type:                  itemType,
+			ID:                    state.ToolItemIDs[idx],
+			CallID:                stored.ID,
+			Name:                  itemName,
+			Namespace:             itemNamespace,
+			EncryptedFunctionArgs: plaintextCollaborationFunctionArgs(state.PlaintextCollaboration && itemType == "function_call", itemNamespace, itemName),
+			Status:                "in_progress",
 		},
 	})}
 	// 迟到宣告时补发已累积的参数增量（custom/tool_search 的输入收尾统一下发，不补发）。
@@ -2150,13 +2188,14 @@ func closeChatToolItems(state *ChatCompletionsToResponsesStreamState) []Response
 			chatToResponsesEvent(state, "response.output_item.done", &ResponsesStreamEvent{
 				OutputIndex: outputIndex,
 				Item: &ResponsesOutput{
-					Type:      "function_call",
-					ID:        itemID,
-					CallID:    toolCall.ID,
-					Name:      name,
-					Namespace: namespace,
-					Arguments: arguments,
-					Status:    "completed",
+					Type:                  "function_call",
+					ID:                    itemID,
+					CallID:                toolCall.ID,
+					Name:                  name,
+					Namespace:             namespace,
+					EncryptedFunctionArgs: plaintextCollaborationFunctionArgs(state.PlaintextCollaboration, namespace, name),
+					Arguments:             arguments,
+					Status:                "completed",
 				},
 			}),
 		)
@@ -2223,13 +2262,14 @@ func (state *ChatCompletionsToResponsesStreamState) chatOutput() []ResponsesOutp
 			name, namespace = ns.Name, ns.Namespace
 		}
 		outputs = append(outputs, ResponsesOutput{
-			Type:      "function_call",
-			ID:        generateItemID(),
-			CallID:    toolCall.ID,
-			Name:      name,
-			Namespace: namespace,
-			Arguments: arguments,
-			Status:    "completed",
+			Type:                  "function_call",
+			ID:                    generateItemID(),
+			CallID:                toolCall.ID,
+			Name:                  name,
+			Namespace:             namespace,
+			EncryptedFunctionArgs: plaintextCollaborationFunctionArgs(state.PlaintextCollaboration, namespace, name),
+			Arguments:             arguments,
+			Status:                "completed",
 		})
 	}
 	return outputs
