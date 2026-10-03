@@ -65,6 +65,18 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	if collaborationChanged {
 		body = collaborationBody
 	}
+	// Chat bridges own their namespace mapping. Native Responses must use an
+	// unreserved namespace once the account has modified collaboration schemas.
+	if !shouldForwardOpenAIResponsesViaRawChatCompletions(account) {
+		aliasedBody, reverse, aliased, aliasErr := aliasOpenAIResponsesCollaborationBody(body, account)
+		if aliasErr != nil {
+			return nil, aliasErr
+		}
+		mergeCodexToolNameReverse(c, reverse)
+		if aliased {
+			body = aliasedBody
+		}
+	}
 
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
@@ -536,7 +548,7 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{"type": "invalid_request_error", "message": codexResult.Error.Error()}})
 			return nil, codexResult.Error
 		}
-		setCodexToolNameReverse(c, codexResult.ToolNameReverse)
+		mergeCodexToolNameReverse(c, codexResult.ToolNameReverse)
 		if codexResult.Modified {
 			markDecodedModified()
 		}

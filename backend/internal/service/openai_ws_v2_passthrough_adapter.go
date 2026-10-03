@@ -758,9 +758,14 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 	} else if compatibilityChanged {
 		firstClientMessage = normalized
 	}
-	if account.IsOpenAIOAuthLike() {
-		aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(firstClientMessage)
+	if account.IsOpenAIOAuthLike() || account.IsOpenAIResponsesCollaborationEnabled() {
+		aliasedBody, reverse, aliased, aliasErr := aliasOpenAIResponsesToolNamesBodyForAccount(firstClientMessage, account)
 		if aliasErr != nil {
+			writeOpenAIResponsesCollaborationWSError(ctx, clientConn, aliasErr)
+			var collaborationErr *apicompat.ResponsesCollaborationError
+			if errors.As(aliasErr, &collaborationErr) {
+				return NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket tool aliases", aliasErr)
+			}
 			return aliasErr
 		}
 		updateCodexToolNameReverseForWSFrame(c, firstClientMessage, reverse)
@@ -1013,9 +1018,10 @@ func (s *OpenAIGatewayService) proxyResponsesWebSocketV2Passthrough(
 					payload = normalized
 				}
 			}
-			if account.IsOpenAIOAuthLike() && (isResponseCreate || eventType == "session.update") {
-				aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(payload)
+			if (account.IsOpenAIOAuthLike() || account.IsOpenAIResponsesCollaborationEnabled()) && (isResponseCreate || eventType == "session.update") {
+				aliasedBody, reverse, aliased, aliasErr := aliasOpenAIResponsesToolNamesBodyForAccount(payload, account)
 				if aliasErr != nil {
+					writeOpenAIResponsesCollaborationWSError(ctx, clientConn, aliasErr)
 					return payload, nil, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, aliasErr.Error(), aliasErr)
 				}
 				updateCodexToolNameReverseForWSFrame(c, payload, reverse)

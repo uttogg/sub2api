@@ -7,6 +7,8 @@ import (
 	"strings"
 )
 
+const ResponsesCollaborationNamespaceAlias = "collaboration__sub2api"
+
 // ResponsesCollaborationError describes a deterministic client payload error.
 // Messages contain field locations and guidance, never task content.
 type ResponsesCollaborationError struct {
@@ -100,6 +102,11 @@ func responsesCollaborationToolLists(req map[string]any) [][]any {
 	if tools, ok := req["tools"].([]any); ok {
 		lists = append(lists, tools)
 	}
+	if session, ok := req["session"].(map[string]any); ok {
+		if tools, ok := session["tools"].([]any); ok {
+			lists = append(lists, tools)
+		}
+	}
 	input, _ := req["input"].([]any)
 	for _, raw := range input {
 		item, ok := raw.(map[string]any)
@@ -117,6 +124,108 @@ func responsesCollaborationToolLists(req map[string]any) [][]any {
 		}
 	}
 	return lists
+}
+
+// AliasResponsesCollaborationNamespace keeps modified task schemas out of the
+// model's reserved collaboration namespace. Call before flattening; the service
+// records the alias for restoration on the way back to the client.
+func AliasResponsesCollaborationNamespace(req map[string]any) (bool, error) {
+	lists := responsesCollaborationToolLists(req)
+	if choice, ok := req["tool_choice"].(map[string]any); ok {
+		if tools, ok := choice["tools"].([]any); ok {
+			lists = append(lists, tools)
+		}
+	}
+	type nameField struct {
+		object map[string]any
+		key    string
+		value  string
+	}
+	var fields []nameField
+	flatNames := make(map[string]string)
+	occupied := make(map[string]bool)
+	var collectTools func([]any)
+	collectTools = func(tools []any) {
+		for _, raw := range tools {
+			tool, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			name := stringValue(tool["name"])
+			if stringValue(tool["type"]) == "namespace" {
+				if name == ResponsesCollaborationNamespaceAlias {
+					occupied[name] = true
+				}
+				if name == "collaboration" {
+					fields = append(fields, nameField{tool, "name", ResponsesCollaborationNamespaceAlias})
+					for _, field := range []string{"tools", "children"} {
+						children, _ := tool[field].([]any)
+						for _, rawChild := range children {
+							child, ok := rawChild.(map[string]any)
+							if ok && stringValue(child["type"]) == "function" {
+								childName := stringValue(child["name"])
+								flatNames[flattenNamespaceToolName(name, childName)] =
+									flattenNamespaceToolName(ResponsesCollaborationNamespaceAlias, childName)
+							}
+						}
+					}
+				}
+				for _, field := range []string{"tools", "children"} {
+					children, _ := tool[field].([]any)
+					collectTools(children)
+				}
+			} else if stringValue(tool["type"]) == "function" {
+				occupied[name] = true
+				if stringValue(tool["namespace"]) == "collaboration" {
+					fields = append(fields, nameField{tool, "namespace", ResponsesCollaborationNamespaceAlias})
+				}
+			}
+		}
+	}
+	for _, list := range lists {
+		collectTools(list)
+	}
+	collectCall := func(item map[string]any) {
+		if stringValue(item["namespace"]) == "collaboration" {
+			fields = append(fields, nameField{item, "namespace", ResponsesCollaborationNamespaceAlias})
+		} else if alias, exists := flatNames[stringValue(item["name"])]; exists {
+			fields = append(fields, nameField{item, "name", alias})
+		}
+	}
+	input, _ := req["input"].([]any)
+	for _, raw := range input {
+		if item, ok := raw.(map[string]any); ok && stringValue(item["type"]) == "function_call" {
+			collectCall(item)
+		}
+	}
+	if choice, ok := req["tool_choice"].(map[string]any); ok && stringValue(choice["type"]) == "function" {
+		collectCall(choice)
+	}
+	if choice, ok := req["tool_choice"].(map[string]any); ok &&
+		stringValue(choice["type"]) == "namespace" && stringValue(choice["name"]) == "collaboration" {
+		fields = append(fields, nameField{choice, "name", ResponsesCollaborationNamespaceAlias})
+	}
+	if len(fields) == 0 {
+		return false, nil
+	}
+	if occupied[ResponsesCollaborationNamespaceAlias] {
+		return false, &ResponsesCollaborationError{
+			Code: "codex_collaboration_tool_alias_conflict", Param: "tools",
+			Message: "collaboration namespace alias conflicts with an existing tool declaration; rename the conflicting tool",
+		}
+	}
+	for _, alias := range flatNames {
+		if occupied[alias] {
+			return false, &ResponsesCollaborationError{
+				Code: "codex_collaboration_tool_alias_conflict", Param: "tools",
+				Message: "collaboration tool alias conflicts with an existing function declaration; rename the conflicting tool",
+			}
+		}
+	}
+	for _, field := range fields {
+		field.object[field.key] = field.value
+	}
+	return true, nil
 }
 
 func normalizeResponsesCollaborationTools(tools []any, namespace string, names map[string]NamespacedToolName) bool {

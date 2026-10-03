@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 	"github.com/tidwall/sjson"
@@ -346,6 +347,19 @@ func restoreCodexToolNameFields(value any, reverse map[string]string) bool {
 			item["name"] = original
 			changed = true
 		}
+		namespace, _ := item["namespace"].(string)
+		if original, exists := reverse["namespace:"+namespace]; exists && namespace == apicompat.ResponsesCollaborationNamespaceAlias {
+			item["namespace"] = original
+			namespace = original
+			changed = true
+		}
+		if namespace == "collaboration" && reverse["namespace:"+apicompat.ResponsesCollaborationNamespaceAlias] == "collaboration" {
+			switch firstNonEmptyString(item["name"]) {
+			case "spawn_agent", "send_message", "followup_task":
+				item["encrypted_function_args"] = []any{}
+				changed = true
+			}
+		}
 	}
 	restoreOutput := func(raw any) {
 		output, _ := raw.([]any)
@@ -414,7 +428,13 @@ func restoreCodexToolNameFields(value any, reverse map[string]string) bool {
 				}
 			}
 			if toolType == "namespace" {
+				name, _ := tool["name"].(string)
+				if name == apicompat.ResponsesCollaborationNamespaceAlias && reverse["namespace:"+name] == "collaboration" {
+					tool["name"] = "collaboration"
+					changed = true
+				}
 				restoreTools(tool["tools"])
+				restoreTools(tool["children"])
 			}
 		}
 	}

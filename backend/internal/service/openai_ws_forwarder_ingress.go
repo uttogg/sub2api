@@ -276,9 +276,10 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		} else if compatibilityChanged {
 			normalized = compatibilityBody
 		}
-		if account.IsOpenAIOAuthLike() {
-			aliasedBody, reverse, aliased, aliasErr := aliasOpenAIOAuthReservedToolNamesBody(normalized)
+		if account.IsOpenAIOAuthLike() || account.IsOpenAIResponsesCollaborationEnabled() {
+			aliasedBody, reverse, aliased, aliasErr := aliasOpenAIResponsesToolNamesBodyForAccount(normalized, account)
 			if aliasErr != nil {
+				writeOpenAIResponsesCollaborationWSError(ctx, clientConn, aliasErr)
 				return openAIWSClientPayload{}, NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, aliasErr.Error(), aliasErr)
 			}
 			updateCodexToolNameReverseForWSFrame(c, normalized, reverse)
