@@ -96,6 +96,12 @@ export default {
       schedulableEnabled: 'Scheduling enabled',
       schedulableDisabled: 'Scheduling disabled',
       failedToToggleSchedulable: 'Failed to toggle scheduling status',
+      priorityQuick: {
+        raise: 'Raise priority (value -1)',
+        lower: 'Lower priority (value +1)',
+        editHint: 'Click to type a value; lower is used first',
+        failed: 'Failed to update priority'
+      },
       groupCountTotal: '{count} groups total',
       platforms: {
         anthropic: 'Anthropic',
@@ -109,6 +115,7 @@ export default {
         deepseek: 'DeepSeek',
         minimax: 'MiniMax',
         opencode_go: 'OpenCode',
+        typesafe: 'TypeSafe / Jev',
       },
       cnProviders: {
         accountMode: {
@@ -849,7 +856,7 @@ export default {
       customErrorCodes: 'Custom Error Codes',
       customErrorCodesHint: 'Only stop scheduling for selected error codes',
       customErrorCodesWarning:
-        'Only selected error codes will stop scheduling. Other errors will return 500.',
+        'Custom error codes only filter normal account-error handling (such as stopping scheduling or marking rate limits). They do not decide whether a request is retried or switched to another account. Unselected errors may still trigger a retry or an account switch, and the status returned to the client depends on the gateway path and error-passthrough rules; it is not always 500. An empty list applies no filtering.',
       customErrorCodes429Warning:
         '429 already has built-in rate limit handling. Adding it to custom error codes will disable the account instead of temporary rate limiting. Are you sure?',
       customErrorCodes529Warning:
@@ -859,6 +866,7 @@ export default {
       enterErrorCode: 'Enter error code (100-599)',
       invalidErrorCode: 'Please enter a valid HTTP error code (100-599)',
       errorCodeExists: 'This error code is already selected',
+      windowActivation: { title: 'Activate 5h window', hint: 'During these hours in the server timezone, send at most one real test request every 5 minutes after the window expires until a new 5h countdown appears. 00:00 means the next midnight; tests consume a small amount of upstream usage.', start: 'Start (server timezone)', end: 'End (server timezone)', jitter: 'Maximum random delay (minutes)', jitterHint: 'Delay each account and window independently by 0 to this many minutes; 0 disables the delay.', invalid: 'Invalid start/end times or random delay outside 0–60 minutes' },
       interceptWarmupRequests: 'Intercept Warmup Requests',
       interceptWarmupRequestsDesc:
         'When enabled, warmup requests like title generation will return mock responses without consuming upstream tokens',

@@ -19,6 +19,33 @@ func (s *OpenAIGatewayService) FetchOpenAIModelsList(ctx context.Context, accoun
 	if s == nil || account == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_MODELS_ACCOUNT_REQUIRED", "OpenAI account is required")
 	}
+	// Antigravity's configured mapping is its catalog; never use OpenAI discovery credentials.
+	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth {
+		modelSet := make(map[string]struct{})
+		for _, model := range account.GetModelMapping() {
+			model = strings.TrimSpace(model)
+			if model != "" && !strings.Contains(model, "*") {
+				modelSet[model] = struct{}{}
+			}
+		}
+		modelIDs := make([]string, 0, len(modelSet))
+		for model := range modelSet {
+			modelIDs = append(modelIDs, model)
+		}
+		sort.Strings(modelIDs)
+		models := make([]map[string]any, 0, len(modelIDs))
+		for _, model := range modelIDs {
+			models = append(models, map[string]any{"id": model, "object": "model", "created": 0, "owned_by": PlatformAntigravity})
+		}
+		body, err := json.Marshal(struct {
+			Object string           `json:"object"`
+			Data   []map[string]any `json:"data"`
+		}{Object: "list", Data: models})
+		if err != nil {
+			return nil, err
+		}
+		return &OpenAIModelsResponse{Body: body, ETag: codexModelsManifestBodyETag(body)}, nil
+	}
 	credentialAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 	if err != nil {
 		return nil, fmt.Errorf("resolve model list credentials: %w", err)
@@ -256,6 +283,20 @@ func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Acco
 	if group == nil || group.Platform != PlatformOpenAI || !group.CodexModelsManifestConfig.Enabled {
 		return nil
 	}
+	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth {
+		body, _, err := mergeConfiguredCodexModelsManifest(
+			response.Body,
+			FilterCodexModelIDsForGroup(openAIConfiguredCodexModelIDsForGroup([]Account{*account}, group), group),
+			group.ModelAllowlist.Models,
+			group.ModelAllowlistEnabled(),
+		)
+		if err != nil {
+			return err
+		}
+		response.Body = body
+		response.ETag = codexModelsManifestBodyETag(body)
+		return nil
+	}
 	body, err := projectAccountModelsBody(response.Body, account, group, true)
 	if err != nil {
 		return err
@@ -282,6 +323,22 @@ func (s *OpenAIGatewayService) FetchPinnedOpenAIModelsList(ctx context.Context, 
 	}
 	if err != nil {
 		return nil, nil, err
+	}
+	// Merge the healthy, group-bound Antigravity mappings without widening native pinned discovery.
+	accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, group.ID, PlatformAntigravity)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load group Antigravity models: %w", err)
+	}
+	for i := range accounts {
+		account := &accounts[i]
+		if account.Type != AccountTypeOAuth {
+			continue
+		}
+		response, err := fetch(ctx, account)
+		if err != nil {
+			return nil, nil, err
+		}
+		results = append(results, pinnedOpenAIModelsResult{account: account, response: response})
 	}
 	models := make([]json.RawMessage, 0)
 	modelIDs := make([]string, 0)

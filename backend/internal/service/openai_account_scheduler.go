@@ -528,7 +528,8 @@ func (s *defaultOpenAIAccountScheduler) selectBySessionHash(
 		clearBinding()
 		return nil, false, nil
 	}
-	if shouldClearStickySession(account, req.RequestedModel) || account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() || !account.IsSchedulable() {
+	if shouldClearStickySession(account, req.RequestedModel) || (account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible()) &&
+		!(NormalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI && account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) || !account.IsSchedulable() {
 		clearBinding()
 		return nil, false, nil
 	}
@@ -1453,7 +1454,8 @@ func (s *defaultOpenAIAccountScheduler) selectByLoadBalance(
 			filterStats.exclude("not_schedulable")
 			continue
 		}
-		if account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible() {
+		if (account.Platform != NormalizeOpenAICompatiblePlatform(req.Platform) || !account.IsOpenAICompatible()) &&
+			!(NormalizeOpenAICompatiblePlatform(req.Platform) == PlatformOpenAI && account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) {
 			filterStats.exclude("platform_mismatch")
 			continue
 		}
@@ -1812,8 +1814,25 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 	}) {
 		return false, "shadow_parent_unhealthy"
 	}
-	if req.RequestedModel != "" && !account.IsModelSupported(req.RequestedModel) {
-		return false, "model_not_supported"
+	if account.Platform == PlatformAntigravity {
+		if NormalizeOpenAICompatiblePlatform(req.Platform) != PlatformOpenAI || account.Type != AccountTypeOAuth {
+			return false, "platform_mismatch"
+		}
+		if !s.service.openAIAccountMatchesSchedulingGroup(account, req.GroupID) {
+			return false, "group_mismatch"
+		}
+		if !account.IsSchedulableForModelWithContext(ctx, req.RequestedModel) {
+			return false, "model_rate_limited"
+		}
+	}
+	if req.RequestedModel != "" {
+		if account.Platform == PlatformAntigravity {
+			if resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, false) == "" {
+				return false, "model_not_supported"
+			}
+		} else if !account.IsModelSupported(req.RequestedModel) {
+			return false, "model_not_supported"
+		}
 	}
 	if req.GroupID != nil && s != nil && s.service != nil &&
 		s.service.needsUpstreamChannelRestrictionCheck(ctx, req.GroupID) &&
@@ -2475,6 +2494,10 @@ func accountSupportsOpenAICapabilities(account *Account, requiredCapability Open
 	if account == nil {
 		return false
 	}
+	if account.Platform == PlatformAntigravity {
+		return account.Type == AccountTypeOAuth && requiredImageCapability == "" &&
+			(requiredCapability == "" || requiredCapability == OpenAIEndpointCapabilityChatCompletions)
+	}
 	return account.SupportsOpenAIEndpointCapability(requiredCapability) &&
 		account.SupportsOpenAIImageCapability(requiredImageCapability)
 }
@@ -2495,6 +2518,9 @@ func (s *OpenAIGatewayService) isOpenAIAccountTransportCompatible(account *Accou
 		return true
 	}
 	if s == nil || account == nil {
+		return false
+	}
+	if account.Platform == PlatformAntigravity {
 		return false
 	}
 	if requiredTransport == OpenAIUpstreamTransportResponsesWebsocketV2Ingress {

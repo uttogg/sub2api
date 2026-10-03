@@ -260,6 +260,14 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
+			if shouldUseAntigravityCompat(account) {
+				setActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
+				if h.antigravityGatewayService == nil {
+					return nil, errors.New("Antigravity gateway service is not configured")
+				}
+				result, err := h.antigravityGatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, nil)
+				return adaptAntigravityOpenAIForwardResult(result), err
+			}
 			return h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, promptCacheKey, "")
 		}()
 		var cyberBlockBodyChat []byte

@@ -188,7 +188,13 @@ func (s *OpenAIGatewayService) MergeGroupConfiguredCodexModels(
 	}
 
 	var configuredModels []string
-	if !group.CodexModelsManifestConfig.Enabled {
+	if group.CodexModelsManifestConfig.Enabled {
+		accounts, err := s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, group.ID, PlatformAntigravity)
+		if err != nil {
+			return fmt.Errorf("load group Antigravity models: %w", err)
+		}
+		configuredModels = openAIConfiguredCodexModelIDsForGroup(accounts, group)
+	} else {
 		var err error
 		configuredModels, err = s.groupConfiguredCodexModelIDs(ctx, group)
 		if err != nil {
@@ -278,10 +284,14 @@ func openAIConfiguredCodexModelIDs(accounts []Account) []string {
 	models := make([]string, 0)
 	for i := range accounts {
 		account := &accounts[i]
-		if account.Platform != PlatformOpenAI {
+		if account.Platform != PlatformOpenAI &&
+			!(account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) {
 			continue
 		}
 		for modelID := range account.GetModelMapping() {
+			if account.Platform == PlatformAntigravity && strings.TrimSpace(account.GetModelMapping()[modelID]) == "" {
+				continue
+			}
 			modelID = strings.TrimSpace(modelID)
 			if modelID == "" || strings.Contains(modelID, "*") {
 				continue
@@ -314,7 +324,8 @@ func openAIConfiguredCodexModelIDsForGroup(accounts []Account, group *Group) []s
 		}
 		for i := range accounts {
 			account := &accounts[i]
-			if account.Platform != PlatformOpenAI {
+			if account.Platform != PlatformOpenAI &&
+				!(account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) {
 				continue
 			}
 			mappedModel, matched := account.ResolveMappedModel(selectedModel)
@@ -1686,6 +1697,19 @@ func (c *openAIModelsCache) set(key string, manifest *OpenAIModelsResponse, now 
 func (s *OpenAIGatewayService) FetchCodexModelsManifest(ctx context.Context, account *Account, clientVersion, ifNoneMatch string) (*OpenAIModelsResponse, error) {
 	if account == nil {
 		return nil, infraerrors.New(http.StatusInternalServerError, "OPENAI_CODEX_MODELS_ACCOUNT_REQUIRED", "account is required")
+	}
+	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth {
+		modelIDs := FilterCodexModelIDsForGroup(openAIConfiguredCodexModelIDs([]Account{*account}), nil)
+		body, err := buildCodexModelsManifestForAccounts(PlatformAntigravity, modelIDs, []Account{*account}, nil, nil, true)
+		if err != nil {
+			return nil, err
+		}
+		manifest := &OpenAIModelsResponse{Body: body, ETag: codexModelsManifestBodyETag(body)}
+		if codexModelsManifestETagMatches(ifNoneMatch, manifest.ETag) {
+			manifest.Body = nil
+			manifest.NotModified = true
+		}
+		return manifest, nil
 	}
 	credAccount, err := resolveCredentialAccount(ctx, s.accountRepo, account)
 	if err != nil {

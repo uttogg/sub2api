@@ -1377,17 +1377,17 @@ func (s *GatewayService) DoGrokNativeResponsesJSON(ctx context.Context, account 
 	return respBytes, nil
 }
 
-// mixedListingAccountAllowed mirrors the mixed-scheduling rule in
-// GeminiMessagesCompatService.listSchedulableAccountsOnce: a gemini group may be
-// served by antigravity accounts, so model listing must consider them too.
+// mixedListingAccountAllowed includes the existing Gemini mixed pool and native
+// Antigravity OAuth accounts bound to an OpenAI group.
 func mixedListingAccountAllowed(groupPlatform string, account *Account) bool {
-	return groupPlatform == PlatformGemini && account.IsMixedSchedulingEnabled()
+	return (groupPlatform == PlatformGemini && account.IsMixedSchedulingEnabled()) ||
+		(groupPlatform == PlatformOpenAI && account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth)
 }
 
-// mixedListingModelAllowed limits what a mixed-scheduling account may advertise
-// on the group's platform: only gemini-* wire IDs are meaningful on a gemini group.
+// OpenAI-compatible adapters accept all Antigravity mappings; the Gemini mixed
+// pool still advertises only gemini-* wire IDs.
 func mixedListingModelAllowed(groupPlatform, model string) bool {
-	return groupPlatform == PlatformGemini && isAntigravityGeminiModel(model)
+	return groupPlatform == PlatformOpenAI || (groupPlatform == PlatformGemini && isAntigravityGeminiModel(model))
 }
 
 func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64, platform string) []string {
@@ -1421,7 +1421,8 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 	if platform != "" {
 		filtered := make([]Account, 0)
 		for _, acc := range accounts {
-			if acc.Platform == platform || mixedListingAccountAllowed(platform, &acc) {
+			if acc.Platform == platform || (mixedListingAccountAllowed(platform, &acc) &&
+				(platform != PlatformOpenAI || (groupID != nil && *groupID > 0))) {
 				filtered = append(filtered, acc)
 			}
 		}
@@ -1444,6 +1445,9 @@ func (s *GatewayService) GetAvailableModels(ctx context.Context, groupID *int64,
 
 		mapping := acc.GetModelMapping()
 		for model := range mapping {
+			if platform == PlatformOpenAI && acc.Platform == PlatformAntigravity && strings.TrimSpace(mapping[model]) == "" {
+				continue
+			}
 			// Accounts pulled in through mixed scheduling only contribute the
 			// models that belong to the listing platform (e.g. an antigravity
 			// account's claude-* mappings must not surface on a gemini group).

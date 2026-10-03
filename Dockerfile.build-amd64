@@ -1,0 +1,137 @@
+# syntax=docker/dockerfile:1.7
+# Independent HK1 linux/amd64 build; repository manifests and Dockerfile stay intact.
+ARG NODE_IMAGE=node:24-alpine
+ARG GOLANG_IMAGE=golang:1.27.0-alpine
+ARG ALPINE_IMAGE=alpine:3.21
+ARG POSTGRES_IMAGE=postgres:18-alpine
+ARG GOPROXY=https://goproxy.cn,direct
+ARG GOSUMDB=sum.golang.google.cn
+ARG NPM_CONFIG_REGISTRY=
+
+FROM --platform=${BUILDPLATFORM} ${NODE_IMAGE} AS frontend-builder
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG NPM_CONFIG_REGISTRY
+ENV NODE_OPTIONS=--max-old-space-size=2048
+WORKDIR /app/frontend
+RUN [ "${BUILDPLATFORM}" = "linux/amd64" ] && \
+    [ "${TARGETPLATFORM}" = "linux/amd64" ] && \
+    corepack enable && corepack prepare pnpm@9 --activate
+
+COPY frontend/package.json frontend/pnpm-lock.yaml /build-input/
+# Keep production dependencies and only the build tools used by Vite/PostCSS.
+# Project the existing lock importer without changing locked versions or integrity.
+RUN node --input-type=commonjs <<'NODE'
+const fs = require('node:fs');
+const source = JSON.parse(fs.readFileSync('/build-input/package.json', 'utf8'));
+const tools = ['@types/node', '@vitejs/plugin-vue', 'autoprefixer', 'postcss', 'tailwindcss', 'typescript', 'vite'];
+const devDependencies = Object.fromEntries(tools.map((name) => {
+  if (!Object.hasOwn(source.devDependencies, name)) throw new Error(`Missing build tool: ${name}`);
+  return [name, source.devDependencies[name]];
+}));
+const manifest = {
+  name: source.name,
+  private: source.private,
+  version: source.version,
+  type: source.type,
+  dependencies: source.dependencies,
+  devDependencies,
+  pnpm: source.pnpm
+};
+const lines = fs.readFileSync('/build-input/pnpm-lock.yaml', 'utf8').replaceAll('\r\n', '\n').split('\n');
+const start = lines.indexOf('    devDependencies:');
+const end = lines.indexOf('packages:');
+if (!lines.includes("lockfileVersion: '9.0'") || start < 0 || end <= start) {
+  throw new Error('Expected the existing single-project pnpm v9 lockfile');
+}
+const selected = ['    devDependencies:'];
+const found = new Set();
+let keep = false;
+for (const line of lines.slice(start + 1, end)) {
+  if (line.startsWith('      ') && !line.startsWith('       ')) {
+    let name = line.trim().slice(0, -1);
+    if (name.startsWith("'")) name = name.slice(1, -1);
+    keep = tools.includes(name);
+    if (keep) found.add(name);
+  }
+  if (keep) selected.push(line);
+}
+if (found.size !== tools.length) throw new Error('Missing locked build-tool entries');
+fs.writeFileSync('package.json', JSON.stringify(manifest, null, 2) + '\n');
+fs.writeFileSync('pnpm-lock.yaml', [...lines.slice(0, start), ...selected, ...lines.slice(end)].join('\n'));
+NODE
+RUN --mount=type=cache,id=sub2api-build-amd64-pnpm,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --prefer-offline --ignore-scripts
+
+COPY frontend/index.html frontend/vite.config.ts frontend/postcss.config.js frontend/tailwind.config.js frontend/tsconfig.json frontend/tsconfig.node.json ./
+COPY frontend/src/ ./src/
+COPY frontend/public/ ./public/
+COPY docs/legal/ /app/docs/legal/
+# Retain the original Vite output/aliases/chunks; omit its type-checking plugin
+# in a disposable build-stage config, not in the repository configuration.
+RUN node --input-type=commonjs <<'NODE'
+const fs = require('node:fs');
+const config = fs.readFileSync('vite.config.ts', 'utf8').replaceAll('\r\n', '\n');
+const checkerImport = "import checker from 'vite-plugin-checker'\n";
+const checkerPlugin = '      checker({\n        vueTsc: true\n      }),\n';
+if (!config.includes(checkerImport) || !config.includes(checkerPlugin)) {
+  throw new Error('Expected the existing Vite checker import and plugin');
+}
+fs.writeFileSync('vite.build-amd64.config.ts', config.replace(checkerImport, '').replace(checkerPlugin, ''));
+NODE
+# Do not call package scripts: build/check:i18n invoke Vitest, and vue-tsc is omitted.
+RUN pnpm exec vite build --config vite.build-amd64.config.ts
+
+FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
+ARG BUILDPLATFORM
+ARG TARGETPLATFORM
+ARG VERSION=0.2.12
+ARG COMMIT=d6adebd22de00478cd021119ba755f37bcb94fb5-dirty
+ARG DATE
+ARG GOPROXY
+ARG GOSUMDB
+ENV GOPROXY=${GOPROXY} GOSUMDB=${GOSUMDB} \
+    GOTOOLCHAIN=local GOMAXPROCS=2 GOMEMLIMIT=2GiB
+RUN [ "${BUILDPLATFORM}" = "linux/amd64" ] && \
+    [ "${TARGETPLATFORM}" = "linux/amd64" ] && \
+    apk add --no-cache git ca-certificates tzdata
+WORKDIR /app/backend
+COPY backend/ ./
+COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
+# Build only the production server. No all-module download, generators or tests.
+RUN --mount=type=cache,id=sub2api-build-amd64-gomod,target=/go/pkg/mod \
+    --mount=type=cache,id=sub2api-build-amd64-gobuild,target=/root/.cache/go-build \
+    [ "${VERSION}" = "0.2.12" ] && \
+    [ "$(tr -d '\r' < cmd/server/VERSION)" = "${VERSION}" ] && \
+    [ "${COMMIT}" = "d6adebd22de00478cd021119ba755f37bcb94fb5-dirty" ] && \
+    DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -p 1 \
+    -tags embed \
+    -ldflags="-s -w -X main.Version=${VERSION} -X main.Commit=${COMMIT} -X main.Date=${DATE_VALUE} -X main.BuildType=release" \
+    -trimpath -o /app/sub2api ./cmd/server
+
+FROM ${POSTGRES_IMAGE} AS pg-client
+FROM ${ALPINE_IMAGE} AS runtime
+ARG TARGETPLATFORM
+LABEL maintainer="Wei-Shaw <github.com/Wei-Shaw>"
+LABEL description="Sub2API - AI API Gateway Platform"
+LABEL org.opencontainers.image.source="https://github.com/Wei-Shaw/sub2api"
+RUN [ "${TARGETPLATFORM}" = "linux/amd64" ] && \
+    apk add --no-cache ca-certificates tzdata su-exec libpq zstd-libs lz4-libs krb5-libs libldap libedit \
+    && rm -rf /var/cache/apk/*
+COPY --from=pg-client /usr/local/bin/pg_dump /usr/local/bin/pg_dump
+COPY --from=pg-client /usr/local/bin/psql /usr/local/bin/psql
+COPY --from=pg-client /usr/local/lib/libpq.so.5* /usr/local/lib/
+RUN addgroup -g 1000 sub2api && \
+    adduser -u 1000 -G sub2api -s /bin/sh -D sub2api
+WORKDIR /app
+COPY --from=backend-builder --chown=sub2api:sub2api /app/sub2api /app/sub2api
+COPY --from=backend-builder --chown=sub2api:sub2api /app/backend/resources /app/resources
+RUN mkdir -p /app/data && chown sub2api:sub2api /app/data
+COPY deploy/docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD wget -q -T 5 -O /dev/null http://localhost:${SERVER_PORT:-8080}/health || exit 1
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["/app/sub2api"]

@@ -116,6 +116,14 @@ func mergeCodexModelsManifestBodies(bodies [][]byte) ([]byte, error) {
 //     naming the failed account IDs is logged.
 func (s *OpenAIGatewayService) FetchPinnedCodexModelsManifest(ctx context.Context, group *Group, clientVersion string) (*OpenAIModelsResponse, *Account, error) {
 	results, err := s.fetchPinnedOpenAIModels(ctx, group, func(ctx context.Context, account *Account) (*OpenAIModelsResponse, error) {
+		if account.Platform == PlatformAntigravity {
+			modelIDs := FilterCodexModelIDsForGroup(openAIConfiguredCodexModelIDsForGroup([]Account{*account}, group), group)
+			body, err := buildCodexModelsManifestForAccounts(PlatformAntigravity, modelIDs, []Account{*account}, group, nil, true)
+			if err != nil {
+				return nil, err
+			}
+			return &OpenAIModelsResponse{Body: body, ETag: codexModelsManifestBodyETag(body)}, nil
+		}
 		manifest, err := s.FetchCodexModelsManifest(ctx, account, clientVersion, "")
 		if err != nil {
 			return nil, err
@@ -171,7 +179,11 @@ func (s *OpenAIGatewayService) fetchPinnedOpenAIModels(ctx context.Context, grou
 	usable := make([]Account, 0, len(cfg.AccountIDs))
 	for _, id := range cfg.AccountIDs {
 		member, ok := memberByID[id]
-		if !ok || member.Platform != PlatformOpenAI {
+		if !ok || (member.Platform != PlatformOpenAI &&
+			!(member.Platform == PlatformAntigravity && member.Type == AccountTypeOAuth)) {
+			continue
+		}
+		if member.Platform == PlatformAntigravity && !member.IsSchedulable() {
 			continue
 		}
 		if !isPinnedCodexModelsAccountUsable(&member) {

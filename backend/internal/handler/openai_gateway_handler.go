@@ -36,6 +36,7 @@ import (
 type OpenAIGatewayHandler struct {
 	compositeResolver          *service.CompositeRouteResolver
 	gatewayService             *service.OpenAIGatewayService
+	antigravityGatewayService  *service.AntigravityGatewayService
 	billingCacheService        *service.BillingCacheService
 	apiKeyService              *service.APIKeyService
 	usageRecordWorkerPool      *service.UsageRecordWorkerPool
@@ -380,6 +381,49 @@ func NewOpenAIGatewayHandler(
 		imageLimiter:             &imageConcurrencyLimiter{},
 		maxAccountSwitches:       maxAccountSwitches,
 		cfg:                      cfg,
+	}
+}
+
+// adaptAntigravityOpenAIForwardResult preserves the native adapter's accounting and metadata.
+func adaptAntigravityOpenAIForwardResult(result *service.ForwardResult) *service.OpenAIForwardResult {
+	if result == nil {
+		return nil
+	}
+	return &service.OpenAIForwardResult{
+		RequestID:                     result.RequestID,
+		UpstreamHeaders:               result.UpstreamHeaders,
+		Usage: service.OpenAIUsage{
+			// Claude input excludes cached tokens; OpenAI's accounting expects the total.
+			InputTokens:              result.Usage.InputTokens + result.Usage.CacheCreationInputTokens + result.Usage.CacheReadInputTokens,
+			OutputTokens:             result.Usage.OutputTokens,
+			CacheCreationInputTokens: result.Usage.CacheCreationInputTokens,
+			CacheReadInputTokens:     result.Usage.CacheReadInputTokens,
+			ImageOutputTokens:        result.Usage.ImageOutputTokens,
+		},
+		Model:                         result.Model,
+		BillingModel:                  result.UpstreamModel,
+		UpstreamModel:                 result.UpstreamModel,
+		UpstreamResponseModel:         result.UpstreamResponseModel,
+		UpstreamResponseModelConflict: result.UpstreamResponseModelConflict,
+		UpstreamResponseServiceTier:   result.UpstreamResponseServiceTier,
+		UpstreamEndpoint:              EndpointAntigravityGenerateContent,
+		ServiceTier:                   result.ServiceTier,
+		ReasoningEffort:               result.ReasoningEffort,
+		RequestedReasoningEffort:      result.RequestedReasoningEffort,
+		Stream:                        result.Stream,
+		ResponseHeaders:               result.UpstreamHeaders,
+		Duration:                      result.Duration,
+		FirstTokenMs:                  result.FirstTokenMs,
+		ClientDisconnect:              result.ClientDisconnect,
+		ImageCount:                    result.ImageCount,
+		ImageSize:                     result.ImageSize,
+		ImageInputSize:                result.ImageInputSize,
+		ImageOutputSize:               result.ImageOutputSize,
+		ImageOutputSizes:              result.ImageOutputSizes,
+		ImageSizeSource:               result.ImageSizeSource,
+		ImageSizeBreakdown:            result.ImageSizeBreakdown,
+		SearchCount:                   result.SearchCount,
+		AudioUsage:                    result.AudioUsage,
 	}
 }
 
@@ -794,6 +838,14 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 					accountReleaseFunc()
 				}
 			}()
+			if shouldUseAntigravityCompat(account) {
+				setActualUpstreamEndpoint(c, EndpointAntigravityGenerateContent)
+				if h.antigravityGatewayService == nil {
+					return nil, errors.New("Antigravity gateway service is not configured")
+				}
+				result, err := h.antigravityGatewayService.ForwardAsResponses(c.Request.Context(), c, account, attemptBody, nil)
+				return adaptAntigravityOpenAIForwardResult(result), err
+			}
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
 		var cyberBlockBodyHTTP []byte
@@ -986,7 +1038,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}
 		if result != nil {
 			// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
-			if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
+			if account.Platform != service.PlatformAntigravity && account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 				h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(c.Request.Context(), account.ID, result.ResponseHeaders)
 			}
 			h.gatewayService.ReportOpenAIAccountScheduleResult(account, openAIAccountScheduleModel(c, account, forwardModel, requireCompact, result), openAIForwardSucceededForScheduling(result), result.FirstTokenMs)
@@ -1355,6 +1407,14 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			return
 		}
 		account := selection.Account
+		// Only the Responses and Chat adapters accept Antigravity on this gateway.
+		if account.Platform == service.PlatformAntigravity {
+			failedAccountIDs[account.ID] = struct{}{}
+			if selection.ReleaseFunc != nil {
+				selection.ReleaseFunc()
+			}
+			continue
+		}
 		sessionHash = ensureOpenAIPoolModeSessionHash(sessionHash, account)
 		reqLog.Debug("openai_messages.account_selected", zap.Int64("account_id", account.ID), zap.String("account_name", account.Name))
 		_ = scheduleDecision
@@ -3046,7 +3106,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					zap.String("billing_model", result.BillingModel),
 				)
 				// 排除 spark 影子:其 codex_* 仅由 QueryUsage(/wham/usage bengalfox)更新(外审第7轮 P1)。
-				if account.Type == service.AccountTypeOAuth && !account.IsShadow() {
+				if account.Platform != service.PlatformAntigravity && account.Type == service.AccountTypeOAuth && !account.IsShadow() {
 					h.gatewayService.UpdateCodexUsageSnapshotFromHeaders(ctx, account.ID, result.ResponseHeaders)
 				}
 				scheduleModel := turnUpstreamModel

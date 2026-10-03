@@ -71,7 +71,7 @@ interface Props {
   modelValue: number[]
   groups: (Group & { account_count?: number })[]
   platform?: GroupPlatform // Optional platform filter
-  mixedScheduling?: boolean // For antigravity accounts: allow anthropic/gemini groups
+  mixedScheduling?: boolean // For antigravity accounts: additionally allow anthropic/gemini groups
   searchable?: boolean | 'auto'
 }
 
@@ -95,14 +95,14 @@ const filteredGroups = computed(() => {
     ? props.groups.filter((g) => g.platform !== 'composite')
     : props.groups
   if (props.platform) {
-    // antigravity 账户启用混合调度后，可选择 anthropic/gemini 分组
+    // antigravity 账户始终可选择 OpenAI 分组；启用混合调度后还可选择 anthropic/gemini 分组
     if (props.platform === 'antigravity' && props.mixedScheduling) {
       result = result.filter(
-        (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini' || g.platform === 'composite'
+        (g) => g.platform === 'antigravity' || g.platform === 'anthropic' || g.platform === 'gemini' || g.platform === 'openai' || g.platform === 'composite'
       )
     } else {
-      // 默认：只能选择同 platform 的分组；composite 分组可接收任意具体平台账号
-      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite')
+      // 默认：同平台或 composite 分组；antigravity 账户还可选择 OpenAI 分组
+      result = result.filter((g) => g.platform === props.platform || g.platform === 'composite' || (props.platform === 'antigravity' && g.platform === 'openai'))
     }
   }
   if (isSearchable.value && searchText.value) {

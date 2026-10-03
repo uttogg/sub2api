@@ -208,7 +208,7 @@ func (s *SchedulerSnapshotService) Stop() {
 }
 
 func (s *SchedulerSnapshotService) ListSchedulableAccounts(ctx context.Context, groupID *int64, platform string, hasForcePlatform bool) ([]Account, bool, error) {
-	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini) && !hasForcePlatform
+	useMixed := (platform == PlatformAnthropic || platform == PlatformGemini || platform == PlatformOpenAI) && !hasForcePlatform
 	mode := s.resolveMode(platform, hasForcePlatform)
 	bucket := s.bucketFor(groupID, platform, mode)
 	var writeToken SchedulerBucketWriteToken
@@ -609,13 +609,14 @@ func (s *SchedulerSnapshotService) handleBulkAccountEvent(ctx context.Context, p
 		}
 		accountGroupIDs := s.normalizeGroupIDs(account.GroupIDs)
 		switch account.Platform {
-		case PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo:
+		case PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe:
 			addPlatformGroups(account.Platform, accountGroupIDs)
 		case PlatformAntigravity:
-			// 批量更新可能刚关闭 mixed_scheduling，仍需清理两个兼容平台的旧快照。
+			// OpenAI 无需 mixed_scheduling；另两个兼容平台仍需清理开关关闭前的旧快照。
 			addPlatformGroups(PlatformAntigravity, accountGroupIDs)
 			addPlatformGroups(PlatformAnthropic, accountGroupIDs)
 			addPlatformGroups(PlatformGemini, accountGroupIDs)
+			addPlatformGroups(PlatformOpenAI, accountGroupIDs)
 		default:
 			return s.rebuildByGroupIDs(ctx, rebuildGroupIDs, "account_bulk_change", seen)
 		}
@@ -817,6 +818,9 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	}
 
 	buckets := s.bucketsForPlatform(account.Platform, groupIDs, seen)
+	if account.Platform == PlatformAntigravity {
+		buckets = append(buckets, s.bucketsForPlatform(PlatformOpenAI, groupIDs, seen)...)
+	}
 	if account.Platform == PlatformAntigravity && account.IsMixedSchedulingEnabled() {
 		buckets = append(buckets, s.bucketsForPlatform(PlatformAnthropic, groupIDs, seen)...)
 		buckets = append(buckets, s.bucketsForPlatform(PlatformGemini, groupIDs, seen)...)
@@ -824,8 +828,8 @@ func (s *SchedulerSnapshotService) rebuildByAccount(ctx context.Context, account
 	return s.rebuildBuckets(ctx, buckets, reason)
 }
 
-func schedulerSnapshotPlatforms() [10]string {
-	return [10]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo}
+func schedulerSnapshotPlatforms() [11]string {
+	return [11]string{PlatformAnthropic, PlatformGemini, PlatformOpenAI, PlatformAntigravity, PlatformGrok, PlatformKimi, PlatformZhipu, PlatformDeepseek, PlatformMiniMax, PlatformOpenCodeGo, PlatformTypeSafe}
 }
 
 // 生命周期辅助函数有意排除 group0；full rebuild 构造 group0 canonical 集时必须显式调用 canonical helper。
@@ -840,7 +844,7 @@ func schedulerCanonicalBucketCount() int {
 	count := 0
 	for _, platform := range schedulerSnapshotPlatforms() {
 		count += 2
-		if platform == PlatformAnthropic || platform == PlatformGemini {
+		if platform == PlatformAnthropic || platform == PlatformGemini || platform == PlatformOpenAI {
 			count++
 		}
 	}
@@ -849,13 +853,13 @@ func schedulerCanonicalBucketCount() int {
 
 func schedulerCanonicalBuckets(groupID int64) []SchedulerBucket {
 	platforms := schedulerSnapshotPlatforms()
-	buckets := make([]SchedulerBucket, 0, len(platforms)*2+2)
+	buckets := make([]SchedulerBucket, 0, len(platforms)*2+3)
 	for _, platform := range platforms {
 		buckets = append(buckets,
 			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeSingle},
 			SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeForced},
 		)
-		if platform == PlatformAnthropic || platform == PlatformGemini {
+		if platform == PlatformAnthropic || platform == PlatformGemini || platform == PlatformOpenAI {
 			buckets = append(buckets, SchedulerBucket{GroupID: groupID, Platform: platform, Mode: SchedulerModeMixed})
 		}
 	}
@@ -893,7 +897,7 @@ func (s *SchedulerSnapshotService) bucketsForPlatform(platform string, groupIDs 
 		}
 		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeSingle})
 		buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeForced})
-		if platform == PlatformAnthropic || platform == PlatformGemini {
+		if platform == PlatformAnthropic || platform == PlatformGemini || platform == PlatformOpenAI {
 			buckets = append(buckets, SchedulerBucket{GroupID: gid, Platform: platform, Mode: SchedulerModeMixed})
 		}
 	}
@@ -1491,7 +1495,7 @@ func (s *SchedulerSnapshotService) loadAccountsFromDB(ctx context.Context, bucke
 		}
 		filtered := make([]Account, 0, len(accounts))
 		for _, acc := range accounts {
-			if acc.Platform == PlatformAntigravity && !acc.IsMixedSchedulingEnabled() {
+			if acc.Platform == PlatformAntigravity && bucket.Platform != PlatformOpenAI && !acc.IsMixedSchedulingEnabled() {
 				continue
 			}
 			filtered = append(filtered, acc)
@@ -1579,7 +1583,7 @@ func (s *SchedulerSnapshotService) resolveMode(platform string, hasForcePlatform
 	if hasForcePlatform {
 		return SchedulerModeForced
 	}
-	if platform == PlatformAnthropic || platform == PlatformGemini {
+	if platform == PlatformAnthropic || platform == PlatformGemini || platform == PlatformOpenAI {
 		return SchedulerModeMixed
 	}
 	return SchedulerModeSingle

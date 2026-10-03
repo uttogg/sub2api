@@ -271,18 +271,26 @@ func (s *OpenAIGatewayService) SelectAccountForTokenCount(
 ) (*Account, error) {
 	ctx = WithOpenAIProfitControlSuppressed(ctx)
 	ctx = s.withOpenAIQuotaAutoPauseContext(ctx)
-	return s.selectAccountForModelWithExclusions(
-		ctx,
-		groupID,
-		platform,
-		sessionHash,
-		requestedModel,
-		nil,
-		false,
-		0,
-		requiredCapability,
-		false,
-	)
+	// Counting endpoints have no Antigravity adapter; never dispatch its OAuth credentials to OpenAI.
+	excluded := make(map[int64]struct{})
+	for {
+		account, err := s.selectAccountForModelWithExclusions(
+			ctx,
+			groupID,
+			platform,
+			sessionHash,
+			requestedModel,
+			excluded,
+			false,
+			0,
+			requiredCapability,
+			false,
+		)
+		if err != nil || account == nil || account.Platform != PlatformAntigravity {
+			return account, err
+		}
+		excluded[account.ID] = struct{}{}
+	}
 }
 
 // NormalizeOpenAICompatiblePlatform 保留 grok 与国产 OpenAI 兼容供应商（kimi/zhipu/
@@ -402,7 +410,8 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "account_model_not_owned"
 		}
 	}
-	if account.Platform != platform || !account.IsOpenAICompatible() {
+	if (account.Platform != platform || !account.IsOpenAICompatible()) &&
+		!(platform == PlatformOpenAI && account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth) {
 		return "platform_mismatch"
 	}
 	if !account.IsSchedulableForModelWithContext(ctx, requestedModel) {
@@ -441,10 +450,16 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			return "quota_auto_pause"
 		}
 	}
-	if requestedModel != "" && !account.IsModelSupported(requestedModel) {
-		return "model_not_supported"
+	if requestedModel != "" {
+		if account.Platform == PlatformAntigravity {
+			if resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, false) == "" {
+				return "model_not_supported"
+			}
+		} else if !account.IsModelSupported(requestedModel) {
+			return "model_not_supported"
+		}
 	}
-	if !account.SupportsOpenAIEndpointCapability(requiredCapability) {
+	if !accountSupportsOpenAICapabilities(account, requiredCapability, "") {
 		if account.IsGrok() && requiredCapability == OpenAIEndpointCapabilityGrokMediaGeneration {
 			_, reason := account.GrokMediaGenerationEligibility()
 			slog.Debug("grok_media_account_ineligible", "account_id", account.ID, "reason", reason)
@@ -815,6 +830,12 @@ func prioritizeOpenAICompactAccounts(accounts []*Account) []*Account {
 // would be sent for a given request, honoring the legacy compact-only mapping
 // when the caller is on the /responses/compact path.
 func resolveOpenAIAccountUpstreamModelForRequest(account *Account, requestedModel string, requireCompact bool) string {
+	if account != nil && account.Platform == PlatformAntigravity {
+		if mapped, ok := resolveGeminiThinkingVariantForLevel(account, requestedModel, ""); ok {
+			return mapped
+		}
+		return mapAntigravityModel(account, requestedModel)
+	}
 	// Forward checks the raw Chat Completions fallback before passthrough.
 	// These API-key accounts therefore apply normal account model_mapping and
 	// upstream normalization, but never compact_model_mapping.
@@ -1513,7 +1534,16 @@ func (s *OpenAIGatewayService) listSchedulableAccounts(ctx context.Context, grou
 	}
 	var accounts []Account
 	var err error
-	if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+	if platform == PlatformOpenAI {
+		platforms := []string{PlatformOpenAI, PlatformAntigravity}
+		if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
+			accounts, err = s.accountRepo.ListSchedulableByPlatforms(ctx, platforms)
+		} else if groupID != nil {
+			accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatforms(ctx, *groupID, platforms)
+		} else {
+			accounts, err = s.accountRepo.ListSchedulableUngroupedByPlatforms(ctx, platforms)
+		}
+	} else if s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		accounts, err = s.accountRepo.ListSchedulableByPlatform(ctx, platform)
 	} else if groupID != nil {
 		accounts, err = s.accountRepo.ListSchedulableByGroupIDAndPlatform(ctx, *groupID, platform)
@@ -1612,6 +1642,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 	}
 	platform = NormalizeOpenAICompatiblePlatform(platform)
 	if s.schedulerSnapshot == nil || s.accountRepo == nil {
+		if account.Platform == PlatformAntigravity && !s.openAIAccountMatchesSchedulingGroup(account, groupID) {
+			return nil
+		}
 		if s.openAIGroupRequiresPrivacySet(ctx, groupID) && !account.IsPrivacySet() {
 			return nil
 		}
@@ -1659,6 +1692,9 @@ func (s *OpenAIGatewayService) recheckSelectedOpenAIAccountFromDBBeforeProfit(ct
 }
 
 func (s *OpenAIGatewayService) openAIAccountMatchesSchedulingGroup(account *Account, groupID *int64) bool {
+	if account != nil && account.Platform == PlatformAntigravity {
+		return groupID != nil && *groupID > 0 && openAIStickyAccountMatchesGroup(account, groupID)
+	}
 	if s != nil && s.cfg != nil && s.cfg.RunMode == config.RunModeSimple {
 		return account != nil
 	}
