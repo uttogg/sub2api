@@ -745,6 +745,12 @@ export default {
         responsesWebsocketsV2: 'Responses WebSocket v2',
         responsesWebsocketsV2Desc:
           '默认关闭。开启后可启用 responses_websockets_v2 协议能力（受网关全局开关与账号类型开关约束）。',
+        requestTimezone: '请求时区',
+        requestTimezoneDesc:
+          '仅对 OpenAI OAuth 生效。替换明确标记的环境上下文时区／日期和已有的网页搜索时区；默认 Asia/Singapore，不改变服务器时区或普通对话内容。',
+        requestTimezoneLoadFailed: '时区列表加载失败，已保留原配置。',
+        requestTimezoneRetry: '重试',
+        requestTimezoneInvalid: '原配置不在支持的时区列表中，请选择有效时区后保存。',
         wsMode: 'WS mode',
         wsModeDesc:
           '仅对当前 OpenAI 账号类型生效。选择“关闭”可禁用 WS；其余模式需全局 gateway.openai_ws.mode_router_v2_enabled=true 才按所选方式连接，未开启时统一使用上下文池。',

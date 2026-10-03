@@ -1860,6 +1860,12 @@
         </div>
       </div>
 
+      <OpenAIRequestTimezoneField
+        v-if="account?.platform === 'openai' && account?.type === 'oauth'"
+        :model-value="openAIRequestTimezone"
+        @update:model-value="value => { openAIRequestTimezone = value; openAIRequestTimezoneChanged = true }"
+      />
+
       <!-- OpenAI WS Mode 三态（off/ctx_pool/passthrough） -->
       <div
         v-if="account?.platform === 'openai' && (account?.type === 'oauth' || account?.type === 'setup-token' || account?.type === 'apikey')"
@@ -3128,6 +3134,7 @@ import type {
 import BaseDialog from '@/components/common/BaseDialog.vue'
 import ConfirmDialog from '@/components/common/ConfirmDialog.vue'
 import Select from '@/components/common/Select.vue'
+import OpenAIRequestTimezoneField from '@/components/account/OpenAIRequestTimezoneField.vue'
 import HelpTooltip from '@/components/common/HelpTooltip.vue'
 import UpstreamRequestIdHeaderField from '@/components/account/UpstreamRequestIdHeaderField.vue'
 import Toggle from '@/components/common/Toggle.vue'
@@ -3682,6 +3689,8 @@ const customBaseUrl = ref('')
 
 // OpenAI 自动透传开关（OAuth/API Key）
 const openaiPassthroughEnabled = ref(false)
+const openAIRequestTimezone = ref('Asia/Singapore')
+const openAIRequestTimezoneChanged = ref(false)
 // OpenAI Codex namespace 工具摊平兼容开关（仅 OAuth），缺省关闭即原样保留
 const openaiFlattenNamespacesEnabled = ref(false)
 const openAILongContextBillingEnabled = ref(false)
@@ -4167,6 +4176,13 @@ const syncFormFromAccount = (newAccount: Account | null) => {
 	upstreamBillingAutoProbeEnabled.value = extra?.upstream_billing_probe_enabled === true
   upstreamBillingRateSyncEnabled.value =
     upstreamBillingAutoProbeEnabled.value && extra?.upstream_billing_rate_sync_enabled === true
+
+  openAIRequestTimezone.value =
+    newAccount.platform === 'openai' && newAccount.type === 'oauth' &&
+    typeof extra?.openai_request_timezone === 'string' && extra.openai_request_timezone !== ''
+      ? extra.openai_request_timezone
+      : 'Asia/Singapore'
+  openAIRequestTimezoneChanged.value = false
 
   // Load OpenAI passthrough toggle (OpenAI OAuth/SetupToken/API Key)
   openaiPassthroughEnabled.value = false
@@ -5661,6 +5677,9 @@ const handleSubmit = async () => {
     if (props.account.platform === 'openai' && (props.account.type === 'oauth' || props.account.type === 'setup-token' || props.account.type === 'apikey')) {
       const currentExtra = (props.account.extra as Record<string, unknown>) || {}
       const newExtra: Record<string, unknown> = { ...currentExtra }
+      if (props.account.type === 'oauth' && openAIRequestTimezoneChanged.value) {
+        newExtra.openai_request_timezone = openAIRequestTimezone.value
+      }
       const hadCodexCLIOnlyEnabled = currentExtra.codex_cli_only === true
       if (props.account.type === 'oauth' || props.account.type === 'setup-token') {
         newExtra.openai_oauth_responses_websockets_v2_mode = openaiOAuthResponsesWebSocketV2Mode.value

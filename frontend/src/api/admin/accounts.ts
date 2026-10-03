@@ -71,6 +71,13 @@ export async function list(
   return data
 }
 
+export async function getOpenAIRequestTimezones(): Promise<{ default: string; timezones: string[] }> {
+  const { data } = await apiClient.get<{ default: string; timezones: string[] }>(
+    '/admin/accounts/openai-request-timezones'
+  )
+  return data
+}
+
 export interface AccountListWithEtagResult {
   notModified: boolean
   etag: string | null
@@ -1133,6 +1140,7 @@ export async function refreshOpenCodeGoUsage(id: number): Promise<OpenCodeGoUsag
 
 export const accountsAPI = {
   list,
+  getOpenAIRequestTimezones,
   listWithEtag,
   getUpstreamBillingRatesWithEtag,
   getById,

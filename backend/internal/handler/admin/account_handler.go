@@ -936,6 +936,15 @@ func ifNoneMatchMatched(ifNoneMatch, etag string) bool {
 	return false
 }
 
+// GetOpenAIRequestTimezones returns the supported OAuth request timezone choices.
+// GET /api/v1/admin/accounts/openai-request-timezones
+func (h *AccountHandler) GetOpenAIRequestTimezones(c *gin.Context) {
+	response.Success(c, gin.H{
+		"default":   service.DefaultOpenAIRequestTimezone,
+		"timezones": service.OpenAIRequestTimezoneOptions(),
+	})
+}
+
 // GetByID handles getting an account by ID
 // GET /api/v1/admin/accounts/:id
 func (h *AccountHandler) GetByID(c *gin.Context) {
@@ -1618,6 +1627,10 @@ func (h *AccountHandler) ApplyOAuthCredentials(c *gin.Context) {
 	}
 	if !existing.IsOAuth() {
 		response.ErrorFrom(c, infraerrors.BadRequest("NOT_OAUTH", "cannot apply oauth credentials to non-OAuth account"))
+		return
+	}
+	if err := service.ValidateOpenAIRequestTimezoneExtra(existing.Platform, req.Type, req.Extra); err != nil {
+		response.ErrorFrom(c, err)
 		return
 	}
 	if err := service.ValidateOpenAILongContextBillingExtra(existing.Platform, req.Extra); err != nil {
