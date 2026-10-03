@@ -347,6 +347,10 @@
               <span class="text-gray-400">{{ t('usage.imageOutputTokens') }}</span>
               <span class="font-medium text-pink-300">{{ tokenTooltipData.image_output_tokens.toLocaleString() }}</span>
             </div>
+            <div v-if="tokenTooltipData" class="flex items-center justify-between gap-4">
+              <span class="text-gray-400">{{ t('usage.tokenRate') }}</span>
+              <span class="font-medium tabular-nums text-white">{{ tokenTooltipRate != null ? tokenTooltipRate.toFixed(2) + ' Token/s' : '-' }}</span>
+            </div>
             <div v-if="tokenTooltipData && tokenTooltipData.cache_creation_tokens > 0">
               <!-- 有 5m/1h 明细时，展开显示 -->
               <template v-if="tokenTooltipData.cache_creation_5m_tokens > 0 || tokenTooltipData.cache_creation_1h_tokens > 0">
@@ -697,6 +701,20 @@ const tooltipData = ref<AdminUsageLog | null>(null)
 const tokenTooltipVisible = ref(false)
 const tokenTooltipPosition = ref({ x: 0, y: 0 })
 const tokenTooltipData = ref<AdminUsageLog | null>(null)
+const tokenTooltipRate = computed<number | null>(() => {
+  const row = tokenTooltipData.value
+  if (!row || row.duration_ms == null || !Number.isFinite(row.duration_ms) || row.duration_ms <= 0 ||
+      !Number.isFinite(row.output_tokens) || row.output_tokens < 0) {
+    return null
+  }
+  // Exclude time to first token when recorded; otherwise use total duration.
+  const firstTokenMs = row.first_token_ms ?? 0
+  if (!Number.isFinite(firstTokenMs) || firstTokenMs < 0) return null
+  const generationMs = row.duration_ms - firstTokenMs
+  if (generationMs <= 0) return null
+  const rate = row.output_tokens / (generationMs / 1000)
+  return Number.isFinite(rate) ? rate : null
+})
 
 const getRequestTypeLabel = (row: AdminUsageLog): string => {
   const requestType = resolveUsageRequestType(row)
