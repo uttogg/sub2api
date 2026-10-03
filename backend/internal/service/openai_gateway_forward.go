@@ -58,6 +58,14 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 		return nil, errors.New("codex_cli_only restriction: only codex official clients are allowed")
 	}
 
+	collaborationBody, collaborationChanged, collaborationErr := normalizeOpenAIResponsesCollaborationBody(body, account)
+	if collaborationErr != nil {
+		return nil, collaborationErr
+	}
+	if collaborationChanged {
+		body = collaborationBody
+	}
+
 	normalizedBody, normalized, err := normalizeOpenAICodexCompactReasoningEffortForAccount(c, account, body)
 	if err != nil {
 		return nil, err

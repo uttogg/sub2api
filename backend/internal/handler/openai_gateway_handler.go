@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
@@ -848,6 +849,25 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
+		var collaborationErr *apicompat.ResponsesCollaborationError
+		if errors.As(err, &collaborationErr) {
+			service.SetOpsUpstreamError(c, http.StatusBadRequest, collaborationErr.Error(), "")
+			if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+				streamStarted = true
+			}
+			if streamStarted {
+				h.handleStreamingAwareErrorWithCode(
+					c, http.StatusBadRequest, "invalid_request_error", collaborationErr.Code,
+					collaborationErr.Message+" ("+collaborationErr.Param+")", true, false,
+				)
+			} else {
+				c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+					"type": "invalid_request_error", "code": collaborationErr.Code,
+					"param": collaborationErr.Param, "message": collaborationErr.Message,
+				}})
+			}
+			return
+		}
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
 			cyberBlockBodyHTTP = sessionHashBody

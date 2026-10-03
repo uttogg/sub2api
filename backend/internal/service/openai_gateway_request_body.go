@@ -1433,13 +1433,16 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 	if account == nil || !account.IsOpenAI() {
 		return body, false, nil
 	}
-	normalized := body
-	changed := false
+	normalized, changed, err := normalizeOpenAIResponsesCollaborationBody(body, account)
+	if err != nil {
+		return body, false, err
+	}
 	if account.IsOpenAIOAuthLike() {
-		var err error
-		normalized, changed, err = normalizeOpenAIResponsesLegacyIngress(body)
-		if err != nil {
-			return body, false, err
+		if next, legacyChanged, legacyErr := normalizeOpenAIResponsesLegacyIngress(normalized); legacyErr != nil {
+			return body, false, legacyErr
+		} else if legacyChanged {
+			normalized = next
+			changed = true
 		}
 	}
 	if next, normalizedReasoningContent, err := normalizeOpenAIResponsesReasoningContentReplay(normalized); err != nil {
