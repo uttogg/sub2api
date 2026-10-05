@@ -40,6 +40,8 @@ type antigravityCompatRequest struct {
 	includeUsage    bool
 	startTime       time.Time
 	reasoningEffort *string
+	// compact 标记最终映射到 Gemini 的原生 remote compaction v2 回合。
+	compact bool
 }
 
 type antigravityCompatUpstreamCall struct {
@@ -226,6 +228,16 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 		(claudeRequest.Thinking.Type == "enabled" || claudeRequest.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
 
+	// 压缩准备只在最终映射到 Gemini 的 Antigravity Responses 请求上启用；
+	// Antigravity Claude 保持既有转换与错误语义。
+	if err := prepareAntigravityGeminiResponsesCompatRequest(&request, mappedModel); err != nil {
+		var requestErr *antigravityCompatRequestError
+		if errors.As(err, &requestErr) {
+			return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", requestErr.message)
+		}
+		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
+	}
+
 	if s.tokenProvider == nil {
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadGateway, "api_error", "Antigravity token provider not configured")
 	}
@@ -242,8 +254,12 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 		_ = s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", err.Error())
 		return nil, err
 	}
-	geminiBody, err := s.buildAntigravityCompatGeminiBody(ctx, request.claudeBody, &claudeRequest, projectID, mappedModel)
+	geminiBody, err := s.buildAntigravityCompatGeminiBodyWithCompact(ctx, request.claudeBody, &claudeRequest, projectID, mappedModel, request.compact)
 	if err != nil {
+		var requestErr *antigravityCompatRequestError
+		if errors.As(err, &requestErr) {
+			return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", requestErr.message)
+		}
 		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", "Invalid request")
 	}
 
@@ -265,6 +281,17 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 	projectID string,
 	mappedModel string,
 ) ([]byte, error) {
+	return s.buildAntigravityCompatGeminiBodyWithCompact(ctx, claudeBody, claudeRequest, projectID, mappedModel, false)
+}
+
+func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBodyWithCompact(
+	ctx context.Context,
+	claudeBody []byte,
+	claudeRequest *antigravity.ClaudeRequest,
+	projectID string,
+	mappedModel string,
+	compact bool,
+) ([]byte, error) {
 	if strings.HasPrefix(strings.ToLower(mappedModel), "gemini-") {
 		body, err := convertClaudeMessagesToGeminiGenerateContent(claudeBody)
 		if err != nil {
@@ -281,6 +308,14 @@ func (s *AntigravityGatewayService) buildAntigravityCompatGeminiBody(
 		}
 		if cleaned, cleanErr := cleanGeminiRequest(body); cleanErr == nil {
 			body = cleaned
+		}
+		body, tailInfo, tailErr := repairAntigravityGeminiContentsTail(body)
+		if tailErr == nil && compact {
+			body, tailErr = applyAntigravityGeminiNoToolCalling(body)
+		}
+		logAntigravityCompatGeminiTail(tailInfo, compact)
+		if tailErr != nil {
+			return nil, tailErr
 		}
 		return s.wrapV1InternalRequest(projectID, mappedModel, body)
 	}
@@ -397,6 +432,27 @@ func (s *AntigravityGatewayService) consumeAntigravityCompatResponse(
 	}
 	streamResult, err := s.consumeAntigravityCompatSuccess(c, call, resp)
 	if err != nil {
+		if streamResult != nil {
+			// 流中断/压缩失败前上游已计量 usage：返回部分 result 供 handler 入账，
+			// 与 #5148 的既有约定一致；错误本身照常向上返回。
+			if streamResult.usage == nil {
+				streamResult.usage = &ClaudeUsage{}
+			}
+			return &ForwardResult{
+				RequestID:                     requestID,
+				UpstreamHeaders:               resp.Header,
+				Usage:                         *streamResult.usage,
+				Model:                         call.request.originalModel,
+				UpstreamModel:                 call.billingModel,
+				UpstreamResponseModel:         observedUpstreamResponseModel(c),
+				UpstreamResponseModelConflict: observedUpstreamResponseModelConflict(c),
+				Stream:                        call.request.clientStream,
+				Duration:                      time.Since(call.request.startTime),
+				FirstTokenMs:                  streamResult.firstTokenMs,
+				ReasoningEffort:               call.request.reasoningEffort,
+				ClientDisconnect:              streamResult.clientDisconnect,
+			}, err
+		}
 		return nil, err
 	}
 	if streamResult.usage == nil {
@@ -434,11 +490,17 @@ func (s *AntigravityGatewayService) consumeAntigravityCompatSuccess(
 				call.request.includeUsage,
 			)
 		}
+		if call.request.compact {
+			return s.handleAntigravityCompactStreaming(c, resp, call.request.startTime, call.request.originalModel)
+		}
 		return s.handleResponsesStreamingFromAntigravity(c, resp, call.request.startTime, call.request.originalModel)
 	}
 
 	if call.request.protocol == antigravityCompatChatCompletions {
 		return s.handleChatCompletionsNonStreamingFromAntigravity(c, resp, call.request.startTime, call.request.originalModel)
+	}
+	if call.request.compact {
+		return s.handleAntigravityCompactNonStreaming(c, resp, call.request.startTime, call.request.originalModel)
 	}
 	return s.handleResponsesNonStreamingFromAntigravity(c, resp, call.request.startTime, call.request.originalModel)
 }

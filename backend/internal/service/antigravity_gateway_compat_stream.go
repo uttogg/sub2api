@@ -14,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 type antigravityCompatStreamAdapter interface {
@@ -117,6 +118,14 @@ type antigravityCompatStreamSession struct {
 	meaningfulData              bool
 	preContentKeepaliveSent     bool
 	preContentKeepaliveInterval time.Duration
+	// sawExplicitUpstreamStop 只记录上游实际到达的显式停止事件（message_delta
+	// 带 stop_reason 或 message_stop）。processor.Finish() 在提前 EOF 时合成的
+	// 终止事件不算完整压缩结果，压缩适配器据此拒绝伪造成功。
+	sawExplicitUpstreamStop bool
+	// suppressWriterKeepalive 由静默 collector 适配器置位：它不面向 SSE 客户端，
+	// 任何注释行都会把响应提前提交成 text/event-stream，因此常规与首内容心跳
+	// 都必须结构性禁用（而不是靠超长间隔规避）。
+	suppressWriterKeepalive bool
 }
 
 const (
@@ -142,11 +151,68 @@ func newAntigravityCompatStreamSession(
 }
 
 func (s *antigravityCompatStreamSession) consume(line string) {
-	claudeEvents := s.processor.ProcessLine(strings.TrimRight(line, "\r\n"))
+	trimmed := strings.TrimRight(line, "\r\n")
+	// 压缩适配器需要上游原始 finishReason：通用 Claude 转换器会把任意非
+	// MAX_TOKENS 结束原因（SAFETY/RECITATION/OTHER 等）统一映射为 end_turn，
+	// 仅凭转换后事件无法区分真正的正常结束。其他适配器不声明该接口，不受影响。
+	if observer, ok := s.adapter.(interface{ observeGeminiFinishReason(string) }); ok {
+		if reason := antigravityGeminiRawFinishReason(trimmed); reason != "" {
+			observer.observeGeminiFinishReason(reason)
+		}
+	}
+	claudeEvents := s.processor.ProcessLine(trimmed)
 	if len(claudeEvents) == 0 {
 		return
 	}
+	if antigravityCompatEventsCarryExplicitStop(claudeEvents) {
+		s.sawExplicitUpstreamStop = true
+	}
 	s.consumeClaudeEvents(claudeEvents)
+}
+
+// antigravityGeminiRawFinishReason 从上游 SSE 行提取 candidates[0].finishReason，
+// 同时兼容 v1internal 封装（response.candidates）与直接 candidates 形态。
+func antigravityGeminiRawFinishReason(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || !strings.HasPrefix(trimmed, "data:") {
+		return ""
+	}
+	payload := strings.TrimSpace(strings.TrimPrefix(trimmed, "data:"))
+	if payload == "" || payload == "[DONE]" {
+		return ""
+	}
+	if reason := gjson.Get(payload, "response.candidates.0.finishReason").String(); reason != "" {
+		return reason
+	}
+	return gjson.Get(payload, "candidates.0.finishReason").String()
+}
+
+// antigravityCompatEventsCarryExplicitStop 报告本次上游响应是否带显式停止语义：
+// message_delta 携带非空 stop_reason，或出现 message_stop。
+func antigravityCompatEventsCarryExplicitStop(data []byte) bool {
+	var eventType string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(line, "event:"):
+			eventType = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
+		case strings.HasPrefix(line, "data:"):
+			if eventType == "message_stop" {
+				return true
+			}
+			if eventType != "message_delta" {
+				continue
+			}
+			var event apicompat.AnthropicStreamEvent
+			if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) != nil {
+				continue
+			}
+			if event.Delta != nil && strings.TrimSpace(event.Delta.StopReason) != "" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *antigravityCompatStreamSession) hasMeaningfulData() bool {
@@ -156,6 +222,9 @@ func (s *antigravityCompatStreamSession) hasMeaningfulData() bool {
 func (s *antigravityCompatStreamSession) writePreContentKeepalive(now time.Time) {
 	// Intentional tradeoff: this commits HTTP 200 after 15s, so later upstream
 	// failures cannot fail over; report them as SSE errors to the client instead.
+	if s.suppressWriterKeepalive {
+		return
+	}
 	if s.hasMeaningfulData() || s.writer.Disconnected() || now.Sub(s.startTime) < s.preContentKeepaliveInterval {
 		return
 	}
@@ -175,7 +244,20 @@ func (s *antigravityCompatStreamSession) finish() (*antigravityStreamResult, err
 		}
 		return nil, antigravityCompatEmptyStreamError()
 	}
+	if observer, ok := s.adapter.(interface{ setExplicitUpstreamStop(bool) }); ok {
+		observer.setExplicitUpstreamStop(s.sawExplicitUpstreamStop)
+	}
 	s.adapter.Finalize(s.writer)
+	if reporter, ok := s.adapter.(interface{ finalError() error }); ok {
+		if err := reporter.finalError(); err != nil {
+			if s.writer.Disconnected() {
+				// 客户端已断开：终态无法投递，按既有流式语义归为 client_disconnect，
+				// 不把上游失败升级成路由级错误。
+				return s.result(true), nil
+			}
+			return s.result(s.writer.Disconnected()), err
+		}
+	}
 	return s.result(s.writer.Disconnected()), nil
 }
 
@@ -304,6 +386,9 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 	}
 	session := newAntigravityCompatStreamSession(originalModel, startTime, adapter, writer)
 	session.preContentKeepaliveInterval = interval
+	if quiet, ok := adapter.(interface{ suppressWriterKeepalive() bool }); ok && quiet.suppressWriterKeepalive() {
+		session.suppressWriterKeepalive = true
+	}
 	events, stopScanner, maxLineSize := s.startAntigravityCompatScanner(resp.Body)
 	defer stopScanner()
 
@@ -312,7 +397,11 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 	if timeoutTimer != nil {
 		defer timeoutTimer.Stop()
 	}
-	keepaliveTicker, keepaliveCh := s.newAntigravityCompatKeepaliveTicker()
+	var keepaliveTicker *time.Ticker
+	var keepaliveCh <-chan time.Time
+	if !session.suppressWriterKeepalive {
+		keepaliveTicker, keepaliveCh = s.newAntigravityCompatKeepaliveTicker()
+	}
 	if keepaliveTicker != nil {
 		defer keepaliveTicker.Stop()
 	}
@@ -372,6 +461,13 @@ func (s *AntigravityGatewayService) handleAntigravityCompatStreamWithKeepaliveIn
 				writer.Write([]byte(": ping\n\n"))
 			}
 		case now := <-preContentTimer.C:
+			if session.suppressWriterKeepalive {
+				// 静默 collector 无心跳可写；该定时器只承担首内容截止时间。
+				if !session.hasMeaningfulData() && !writer.Disconnected() {
+					return preContentTimeout()
+				}
+				continue
+			}
 			if !session.hasMeaningfulData() && !writer.Disconnected() && !now.Before(preContentDeadline) {
 				return preContentTimeout()
 			}
