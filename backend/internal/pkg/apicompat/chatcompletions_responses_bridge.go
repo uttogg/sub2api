@@ -653,7 +653,7 @@ func buildChatMessagesFromItems(messages []ChatMessage, rawItems []json.RawMessa
 	return messages, mediaByCallID, nil
 }
 
-// agentMessageText 按原顺序拼接 agent_message 里 input_text 与 encrypted_content 片段的文本。
+// agentMessageText 按原顺序拼接 agent_message 里 input_text/output_text 与 encrypted_content 片段的文本。
 func agentMessageText(raw json.RawMessage) string {
 	raw = bytesTrimSpace(raw)
 	if len(raw) == 0 || string(raw) == "null" {
@@ -670,7 +670,7 @@ func agentMessageText(raw json.RawMessage) string {
 	var b strings.Builder
 	for _, part := range parts {
 		switch rawString(part["type"]) {
-		case "input_text", "text":
+		case "input_text", "text", "output_text":
 			_, _ = b.WriteString(rawString(part["text"]))
 		case "encrypted_content":
 			_, _ = b.WriteString(rawString(part["encrypted_content"]))

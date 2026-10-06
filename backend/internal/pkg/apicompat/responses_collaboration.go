@@ -58,43 +58,86 @@ func NormalizeResponsesCollaboration(req map[string]any) (bool, error) {
 		}
 	}
 	input, _ := req["input"].([]any)
-	for i, raw := range input {
-		item, ok := raw.(map[string]any)
-		if !ok || stringValue(item["type"]) != "agent_message" {
-			continue
-		}
-		param := fmt.Sprintf("input[%d].content", i)
-		text, err := responsesCollaborationMessageText(item["content"], param)
-		if err != nil {
-			return false, err
-		}
-		// Preserve explicit routing metadata without granting system/developer
-		// authority to the sender or changing the order of content parts.
-		var envelope strings.Builder
-		for _, field := range []struct{ key, label string }{
-			{"author", "Sender"}, {"recipient", "Recipient"},
-		} {
-			value := stringValue(item[field.key])
-			if value == "" && item[field.key] != nil {
-				if encoded, err := json.Marshal(item[field.key]); err == nil {
-					value = string(encoded)
+	if len(input) > 0 {
+		// Rebuild the list so a confirmably empty collaboration entry can be
+		// dropped while every other item keeps its position and content.
+		normalizedInput := make([]any, 0, len(input))
+		inputChanged := false
+		for i, raw := range input {
+			item, ok := raw.(map[string]any)
+			if !ok || stringValue(item["type"]) != "agent_message" {
+				normalizedInput = append(normalizedInput, raw)
+				continue
+			}
+			param := fmt.Sprintf("input[%d].content", i)
+			text, hasText, err := responsesCollaborationMessageText(item["content"], param)
+			if err != nil {
+				return false, err
+			}
+			if !hasText {
+				if err := responsesCollaborationEncryptedItemFields(item, i); err != nil {
+					return false, err
+				}
+				// A body-free history entry carries no task. The Chat bridge
+				// already skips entries with empty extracted text; a routed
+				// envelope with no body is equivalent here.
+				inputChanged = true
+				continue
+			}
+			// Preserve explicit routing metadata without granting system/developer
+			// authority to the sender or changing the order of content parts.
+			var envelope strings.Builder
+			for _, field := range []struct{ key, label string }{
+				{"author", "Sender"}, {"recipient", "Recipient"},
+			} {
+				value := stringValue(item[field.key])
+				if value == "" && item[field.key] != nil {
+					if encoded, err := json.Marshal(item[field.key]); err == nil {
+						value = string(encoded)
+					}
+				}
+				if value != "" &&
+					!strings.HasPrefix(text, field.label+":") &&
+					!strings.Contains(text, "\n"+field.label+":") {
+					fmt.Fprintf(&envelope, "%s: %s\n", field.label, value)
 				}
 			}
-			if value != "" &&
-				!strings.HasPrefix(text, field.label+":") &&
-				!strings.Contains(text, "\n"+field.label+":") {
-				fmt.Fprintf(&envelope, "%s: %s\n", field.label, value)
-			}
+			normalizedInput = append(normalizedInput, map[string]any{
+				"type": "message", "role": "user",
+				"content": []any{map[string]any{
+					"type": "input_text", "text": envelope.String() + text,
+				}},
+			})
+			inputChanged = true
 		}
-		input[i] = map[string]any{
-			"type": "message", "role": "user",
-			"content": []any{map[string]any{
-				"type": "input_text", "text": envelope.String() + text,
-			}},
+		if inputChanged {
+			req["input"] = normalizedInput
+			changed = true
 		}
-		changed = true
 	}
 	return changed, nil
+}
+
+// A bodyless agent_message may only be dropped when no top-level ciphertext
+// field (encrypted_content or opaque) accompanies it; otherwise filtering
+// would silently discard a task.
+func responsesCollaborationEncryptedItemFields(item map[string]any, index int) error {
+	for _, field := range []string{"encrypted_content", "opaque"} {
+		value, exists := item[field]
+		if !exists || responsesCollaborationEmptyCipherField(value) {
+			continue
+		}
+		return responsesCollaborationEncryptedError(fmt.Sprintf("input[%d].%s", index, field))
+	}
+	return nil
+}
+
+func responsesCollaborationEmptyCipherField(value any) bool {
+	if value == nil {
+		return true
+	}
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) == ""
 }
 
 func responsesCollaborationToolLists(req map[string]any) [][]any {
@@ -274,18 +317,16 @@ func normalizeResponsesCollaborationTools(tools []any, namespace string, names m
 	return changed
 }
 
-func responsesCollaborationMessageText(content any, param string) (string, error) {
+// responsesCollaborationMessageText returns the routed plaintext text. The
+// hasText result is false only when the content is confirmably body-free:
+// nil, empty/whitespace-only text parts, or a routed envelope with no Payload
+// body. Ciphertext and unsupported content structures still fail closed.
+func responsesCollaborationMessageText(content any, param string) (string, bool, error) {
 	invalid := func(location string) error {
-		return &ResponsesCollaborationError{
-			Code: "codex_agent_message_invalid", Param: location,
-			Message: "agent_message requires a non-empty plaintext task and valid text content",
-		}
+		return responsesCollaborationInvalidError(location)
 	}
 	encrypted := func(location string) error {
-		return &ResponsesCollaborationError{
-			Code: "codex_agent_message_encrypted_unsupported", Param: location,
-			Message: "encrypted agent messages cannot be recovered; start a new parent session and resend a plaintext task",
-		}
+		return responsesCollaborationEncryptedError(location)
 	}
 	validate := func(value any, location string) error {
 		text, ok := value.(string)
@@ -300,75 +341,105 @@ func responsesCollaborationMessageText(content any, param string) (string, error
 	switch value := content.(type) {
 	case string:
 		if err := validate(value, param); err != nil {
-			return "", err
+			return "", false, err
 		}
+	case nil:
+		return "", false, nil
 	case []any:
 		for i, raw := range value {
 			location := fmt.Sprintf("%s[%d]", param, i)
 			part, ok := raw.(map[string]any)
 			if !ok {
-				return "", invalid(location)
+				return "", false, invalid(location)
 			}
 			switch stringValue(part["type"]) {
-			case "input_text", "text":
+			case "input_text", "text", "output_text":
 				if err := validate(part["text"], location+".text"); err != nil {
-					return "", err
+					return "", false, err
 				}
 			case "encrypted_content":
 				if _, opaque := part["encrypted_content"].(map[string]any); opaque {
-					return "", encrypted(location + ".encrypted_content")
+					return "", false, encrypted(location + ".encrypted_content")
 				}
 				if err := validate(part["encrypted_content"], location+".encrypted_content"); err != nil {
-					return "", err
+					return "", false, err
 				}
 			case "opaque":
-				return "", encrypted(location)
+				return "", false, encrypted(location)
 			default:
-				return "", invalid(location)
+				return "", false, invalid(location)
 			}
 		}
 	default:
-		return "", invalid(param)
+		return "", false, invalid(param)
 	}
 	raw, err := json.Marshal(content)
 	if err != nil {
-		return "", invalid(param)
+		return "", false, invalid(param)
 	}
-	// Keep the Chat bridge's text ordering contract in one place.
+	// Keep this extraction in the same order as the Chat bridge helper.
 	text := agentMessageText(raw)
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
-		return "", invalid(param)
+		return "", false, nil
 	}
 	if responsesCollaborationFernetPayload(trimmed) {
-		return "", encrypted(param)
+		return "", false, encrypted(param)
 	}
-	if strings.HasPrefix(trimmed, "Message Type:") {
-		lines := strings.Split(trimmed, "\n")
-		hasPayload := false
-		for i, line := range lines {
-			line = strings.TrimSpace(line)
-			if payload, found := strings.CutPrefix(line, "Payload:"); found {
-				payload = strings.TrimSpace(payload + "\n" + strings.Join(lines[i+1:], "\n"))
-				if responsesCollaborationFernetPayload(payload) {
-					return "", encrypted(param)
-				}
-				hasPayload = payload != ""
-				break
+	withoutBody, ciphertext := responsesCollaborationEnvelopeState(trimmed)
+	if ciphertext {
+		return "", false, encrypted(param)
+	}
+	if withoutBody {
+		return "", false, nil
+	}
+	return text, true, nil
+}
+
+func responsesCollaborationInvalidError(location string) error {
+	return &ResponsesCollaborationError{
+		Code: "codex_agent_message_invalid", Param: location,
+		Message: "agent_message requires a non-empty plaintext task and valid text content",
+	}
+}
+
+func responsesCollaborationEncryptedError(location string) error {
+	return &ResponsesCollaborationError{
+		Code: "codex_agent_message_encrypted_unsupported", Param: location,
+		Message: "encrypted agent messages cannot be recovered; start a new parent session and resend a plaintext task",
+	}
+}
+
+// responsesCollaborationEnvelopeState recognizes a routed collaboration
+// envelope. Headers may appear in any order; only the known header set is
+// skipped, and an unknown non-empty line counts as a plaintext body. A known
+// header block that ends without a Payload body is still confirmably bodyless.
+func responsesCollaborationEnvelopeState(text string) (withoutBody, encrypted bool) {
+	lines := strings.Split(text, "\n")
+	hasMessageType := false
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if payload, found := strings.CutPrefix(line, "Payload:"); found {
+			if !hasMessageType {
+				return false, false
 			}
-			if line == "" || strings.HasPrefix(line, "Message Type:") ||
-				strings.HasPrefix(line, "Task name:") || strings.HasPrefix(line, "Sender:") ||
-				strings.HasPrefix(line, "Recipient:") {
-				continue
+			payload = strings.TrimSpace(payload + "\n" + strings.Join(lines[i+1:], "\n"))
+			if responsesCollaborationFernetPayload(payload) {
+				return false, true
 			}
-			hasPayload = true
-			break
+			return payload == "", false
 		}
-		if !hasPayload {
-			return "", invalid(param)
+		switch {
+		case line == "":
+		case strings.HasPrefix(line, "Message Type:"):
+			hasMessageType = true
+		case strings.HasPrefix(line, "Task name:"), strings.HasPrefix(line, "Sender:"),
+			strings.HasPrefix(line, "Recipient:"):
+		default:
+			return false, false
 		}
 	}
-	return text, nil
+	return hasMessageType, false
 }
 
 // Recognize only a structurally plausible Fernet token, not arbitrary Base64.
