@@ -204,11 +204,20 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 			body = normalized
 			originalBody = normalized
 		}
-		if normalized, changed, normalizeErr := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body, isOpenAIResponsesCompactPath(c)); normalizeErr != nil {
-			return nil, normalizeErr
-		} else if changed {
-			body = normalized
-			originalBody = normalized
+		// DeepSeek's native Responses endpoint requires the full plaintext
+		// reasoning history; the OpenAI API-key store=false replay cleanup
+		// drops reasoning items that carry no encrypted_content, which would
+		// re-trigger the thinking-mode 400. Skip it only for that upstream on
+		// the native Responses path; raw Chat Completions keeps the cleanup.
+		deepSeekNativeResponses := !shouldForwardOpenAIResponsesViaRawChatCompletions(account) &&
+			targetsDeepSeekNativeResponsesForRequest(account, reqModel, compactPath)
+		if !deepSeekNativeResponses {
+			if normalized, changed, normalizeErr := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(body, isOpenAIResponsesCompactPath(c)); normalizeErr != nil {
+				return nil, normalizeErr
+			} else if changed {
+				body = normalized
+				originalBody = normalized
+			}
 		}
 		requestView = newOpenAIRequestView(body)
 		reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
@@ -220,16 +229,21 @@ func (s *OpenAIGatewayService) Forward(ctx context.Context, c *gin.Context, acco
 	}
 	SetActualOpenAIUpstreamEndpoint(c, openAIResponsesUpstreamEndpoint)
 	if account.IsOpenAI() && (account.IsOpenAIApiKey() || account.IsOpenAIOAuthLike()) {
-		normalizedReasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningContentReplay(body)
-		if reasoningErr != nil {
-			return nil, fmt.Errorf("normalize OpenAI Responses reasoning content replay: %w", reasoningErr)
-		}
-		if reasoningChanged {
-			body = normalizedReasoningBody
-			originalBody = normalizedReasoningBody
-			requestView = newOpenAIRequestView(normalizedReasoningBody)
-			reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
-			originalModel = reqModel
+		// OpenAI accepts only an empty reasoning.content array on replay, but
+		// DeepSeek's native Responses endpoint requires the full reasoning_text
+		// content. Scope the removal to non-DeepSeek upstreams.
+		if !targetsDeepSeekNativeResponsesForRequest(account, reqModel, compactPath) {
+			normalizedReasoningBody, reasoningChanged, reasoningErr := normalizeOpenAIResponsesReasoningContentReplay(body)
+			if reasoningErr != nil {
+				return nil, fmt.Errorf("normalize OpenAI Responses reasoning content replay: %w", reasoningErr)
+			}
+			if reasoningChanged {
+				body = normalizedReasoningBody
+				originalBody = normalizedReasoningBody
+				requestView = newOpenAIRequestView(normalizedReasoningBody)
+				reqModel, reqStream, promptCacheKey = requestView.Model, requestView.Stream, requestView.PromptCacheKey
+				originalModel = reqModel
+			}
 		}
 		sanitizedBody, changed, sanitizeErr := sanitizeOpenAIResponsesInputItemIDs(body)
 		if sanitizeErr != nil {

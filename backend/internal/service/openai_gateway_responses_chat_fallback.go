@@ -460,6 +460,45 @@ func targetsOpenCodeZenUpstream(account *Account) bool {
 	return isOfficialOpenCodeHost(account.GetOpenAIBaseURL())
 }
 
+// targetsDeepSeekNativeResponses reports whether this account's upstream
+// /v1/responses endpoint enforces DeepSeek's thinking-mode reasoning replay
+// contract. Two cases qualify:
+//   - the account actually targets the DeepSeek API (platform=deepseek or an
+//     OpenAI-platform API-key account whose base_url is api.deepseek.com), or
+//   - an OpenAI-compatible API-key account whose final mapped upstream model
+//     is a DeepSeek catalog model (a proxy/gateway that serves DeepSeek
+//     behind the OpenAI protocol).
+//
+// It is deliberately scoped to the native Responses path: raw Chat
+// Completions callers and arbitrary model prefixes are not affected.
+func targetsDeepSeekNativeResponses(account *Account, upstreamModel string) bool {
+	if account == nil {
+		return false
+	}
+	if targetsDeepSeekAPIHost(account) {
+		return true
+	}
+	return account.IsOpenAIApiKey() && isDeepSeekCatalogModel(upstreamModel)
+}
+
+// targetsDeepSeekNativeResponsesForRequest is the request-scoped form of
+// targetsDeepSeekNativeResponses. It resolves the account's final upstream
+// model through the shared scheduler mapping chain so DeepSeek aliases are
+// covered while a request that maps to a GPT model is not misclassified.
+func targetsDeepSeekNativeResponsesForRequest(account *Account, requestedModel string, requireCompact bool) bool {
+	if account == nil {
+		return false
+	}
+	if targetsDeepSeekAPIHost(account) {
+		return true
+	}
+	if !account.IsOpenAIApiKey() {
+		return false
+	}
+	upstreamModel := resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, requireCompact)
+	return isDeepSeekCatalogModel(upstreamModel)
+}
+
 // isDeepSeekCatalogModel 判定（剥掉 opencode 前缀后的）模型 ID 是否属于
 // DeepSeek 系列，例如 deepseek-v4-flash / deepseek-v4.1-flash / deepseek-chat。
 func isDeepSeekCatalogModel(model string) bool {

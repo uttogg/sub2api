@@ -13,15 +13,34 @@ type chatMessageContent struct {
 	Parts []ChatContentPart
 }
 
+// ChatCompletionsToResponsesRequestOptions carries provider-scoped request
+// conversion policies. A nil value behaves exactly like the historical
+// conversion. (The name is distinct from ChatCompletionsToResponsesOptions,
+// which carries response-side return policies in chatcompletions_responses_bridge.go.)
+type ChatCompletionsToResponsesRequestOptions struct {
+	// DeepSeekNativeReasoning emits assistant reasoning_content as a native
+	// Responses reasoning item whose content holds the full reasoning_text.
+	// DeepSeek's thinking mode rejects histories that do not pass the
+	// reasoning back in this shape. Other providers keep the legacy
+	// "<thinking>" inline text so their behavior is unchanged.
+	DeepSeekNativeReasoning bool
+}
+
 // ChatCompletionsToResponses converts a Chat Completions request into a
 // Responses API request. The upstream always streams, so Stream is forced to
 // true. store is always false and reasoning.encrypted_content is always
 // included so that the response translator has full context.
 func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest, error) {
+	return ChatCompletionsToResponsesWithOptions(req, nil)
+}
+
+// ChatCompletionsToResponsesWithOptions is ChatCompletionsToResponses with
+// provider-scoped policies (see ChatCompletionsToResponsesRequestOptions).
+func ChatCompletionsToResponsesWithOptions(req *ChatCompletionsRequest, opts *ChatCompletionsToResponsesRequestOptions) (*ResponsesRequest, error) {
 	if err := openai.ValidateGPT61SolReasoningEffort(req.Model, req.ReasoningEffort); err != nil {
 		return nil, err
 	}
-	input, err := convertChatMessagesToResponsesInput(req.Messages)
+	input, err := convertChatMessagesToResponsesInput(req.Messages, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -105,10 +124,10 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 
 // convertChatMessagesToResponsesInput converts the Chat Completions messages
 // array into a Responses API input items array.
-func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputItem, error) {
+func convertChatMessagesToResponsesInput(msgs []ChatMessage, opts *ChatCompletionsToResponsesRequestOptions) ([]ResponsesInputItem, error) {
 	var out []ResponsesInputItem
 	for _, m := range msgs {
-		items, err := chatMessageToResponsesItems(m)
+		items, err := chatMessageToResponsesItems(m, opts)
 		if err != nil {
 			return nil, err
 		}
@@ -119,14 +138,14 @@ func convertChatMessagesToResponsesInput(msgs []ChatMessage) ([]ResponsesInputIt
 
 // chatMessageToResponsesItems converts a single ChatMessage into one or more
 // ResponsesInputItem values.
-func chatMessageToResponsesItems(m ChatMessage) ([]ResponsesInputItem, error) {
+func chatMessageToResponsesItems(m ChatMessage, opts *ChatCompletionsToResponsesRequestOptions) ([]ResponsesInputItem, error) {
 	switch m.Role {
 	case "system":
 		return chatSystemToResponses(m)
 	case "user":
 		return chatUserToResponses(m)
 	case "assistant":
-		return chatAssistantToResponses(m)
+		return chatAssistantToResponses(m, opts)
 	case "tool":
 		return chatToolToResponses(m)
 	case "function":
@@ -167,9 +186,61 @@ func chatUserToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 // text content and tool_calls, the text is emitted as an assistant message
 // first, then each tool_call becomes a function_call item. If the content is
 // empty/nil and there are tool_calls, only function_call items are emitted.
-func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
+//
+// With DeepSeekNativeReasoning the assistant reasoning is emitted as a native
+// Responses reasoning item carrying the full reasoning_text, placed directly
+// before the assistant message and its function calls, instead of being
+// inlined into the answer as "<thinking>" text.
+func chatAssistantToResponses(m ChatMessage, opts *ChatCompletionsToResponsesRequestOptions) ([]ResponsesInputItem, error) {
 	var items []ResponsesInputItem
 	content := ""
+	reasoning := ""
+
+	if opts != nil && opts.DeepSeekNativeReasoning {
+		reasoning = m.ReasoningContent
+		if len(m.Content) > 0 {
+			answer, partReasoning, err := parseAssistantContentSplit(m.Content)
+			if err != nil {
+				return nil, err
+			}
+			content = answer
+			if partReasoning != "" {
+				if reasoning != "" {
+					reasoning += "\n"
+				}
+				reasoning += partReasoning
+			}
+		}
+		if reasoning != "" {
+			parts := []ResponsesContentPart{{Type: "reasoning_text", Text: reasoning}}
+			partsJSON, err := json.Marshal(parts)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, ResponsesInputItem{Type: "reasoning", Content: partsJSON})
+		}
+		if content != "" {
+			parts := []ResponsesContentPart{{Type: "output_text", Text: content}}
+			partsJSON, err := json.Marshal(parts)
+			if err != nil {
+				return nil, err
+			}
+			items = append(items, ResponsesInputItem{Type: "message", Role: "assistant", Content: partsJSON})
+		}
+		for _, tc := range m.ToolCalls {
+			args := tc.Function.Arguments
+			if args == "" {
+				args = "{}"
+			}
+			items = append(items, ResponsesInputItem{
+				Type:      "function_call",
+				CallID:    tc.ID,
+				Name:      tc.Function.Name,
+				Arguments: args,
+			})
+		}
+		return items, nil
+	}
 
 	if m.ReasoningContent != "" {
 		content = "<thinking>" + m.ReasoningContent + "</thinking>"
@@ -213,6 +284,52 @@ func chatAssistantToResponses(m ChatMessage) ([]ResponsesInputItem, error) {
 	}
 
 	return items, nil
+}
+
+// parseAssistantContentSplit separates assistant content into normal answer
+// text and structured thinking/reasoning text. It mirrors parseAssistantContent
+// but keeps the two kinds apart so DeepSeek can replay reasoning as a native
+// reasoning item.
+func parseAssistantContentSplit(raw json.RawMessage) (answer string, reasoning string, err error) {
+	if len(raw) == 0 {
+		return "", "", nil
+	}
+
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s, "", nil
+	}
+
+	var parts []map[string]any
+	if err := json.Unmarshal(raw, &parts); err != nil {
+		// Keep compatibility with prior behavior: unsupported assistant content
+		// formats are ignored instead of failing the whole request conversion.
+		return "", "", nil
+	}
+
+	var answerBuilder strings.Builder
+	var reasoningBuilder strings.Builder
+	for _, p := range parts {
+		typ, _ := p["type"].(string)
+		text, _ := p["text"].(string)
+		thinking, _ := p["thinking"].(string)
+
+		switch typ {
+		case "thinking", "reasoning":
+			switch {
+			case thinking != "":
+				reasoningBuilder.WriteString(thinking)
+			case text != "":
+				reasoningBuilder.WriteString(text)
+			}
+		default:
+			if text != "" {
+				answerBuilder.WriteString(text)
+			}
+		}
+	}
+
+	return answerBuilder.String(), reasoningBuilder.String(), nil
 }
 
 // parseAssistantContent returns assistant content as plain text.

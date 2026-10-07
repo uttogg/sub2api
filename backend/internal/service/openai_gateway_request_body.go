@@ -1433,6 +1433,11 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 	if account == nil || !account.IsOpenAI() {
 		return body, false, nil
 	}
+	// DeepSeek's native Responses endpoint requires the full plaintext
+	// reasoning history. Skip the OpenAI-only replay cleanup for that upstream
+	// so reasoning.content and reasoning items without encrypted_content
+	// survive; all other compatibility and sanitize steps stay in place.
+	deepSeekNativeResponses := targetsDeepSeekNativeResponsesForRequest(account, gjson.GetBytes(body, "model").String(), false)
 	normalized, changed, err := normalizeOpenAIResponsesCollaborationBody(body, account)
 	if err != nil {
 		return body, false, err
@@ -1445,11 +1450,13 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			changed = true
 		}
 	}
-	if next, normalizedReasoningContent, err := normalizeOpenAIResponsesReasoningContentReplay(normalized); err != nil {
-		return body, false, err
-	} else if normalizedReasoningContent {
-		normalized = next
-		changed = true
+	if !deepSeekNativeResponses {
+		if next, normalizedReasoningContent, err := normalizeOpenAIResponsesReasoningContentReplay(normalized); err != nil {
+			return body, false, err
+		} else if normalizedReasoningContent {
+			normalized = next
+			changed = true
+		}
 	}
 	if account.IsOpenAIApiKey() {
 		if next, normalizedParallel, err := normalizeOpenAIParallelToolCallsWithoutTools(normalized, responsesLite); err != nil {
@@ -1458,11 +1465,13 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 			normalized = next
 			changed = true
 		}
-		if next, normalizedReasoning, err := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(normalized, false); err != nil {
-			return body, false, err
-		} else if normalizedReasoning {
-			normalized = next
-			changed = true
+		if !deepSeekNativeResponses {
+			if next, normalizedReasoning, err := normalizeOpenAIAPIKeyStoreFalseReasoningReplay(normalized, false); err != nil {
+				return body, false, err
+			} else if normalizedReasoning {
+				normalized = next
+				changed = true
+			}
 		}
 	}
 	if sanitized, idsChanged, err := sanitizeOpenAIResponsesInputItemIDs(normalized); err != nil {

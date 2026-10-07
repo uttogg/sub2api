@@ -271,7 +271,15 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		// Normal path: convert Chat Completions → Responses.
 		// ChatCompletionsToResponses always sets Stream=true (upstream always streams).
 		chatReq.Model = upstreamModel
-		responsesReq, err = apicompat.ChatCompletionsToResponses(&chatReq)
+		// DeepSeek's native Responses endpoint validates thinking-mode history:
+		// the assistant reasoning must be replayed as a native reasoning item
+		// whose content holds the full reasoning_text. Other providers keep the
+		// legacy inline "<thinking>" behavior.
+		var convertOpts *apicompat.ChatCompletionsToResponsesRequestOptions
+		if targetsDeepSeekNativeResponses(account, upstreamModel) {
+			convertOpts = &apicompat.ChatCompletionsToResponsesRequestOptions{DeepSeekNativeReasoning: true}
+		}
+		responsesReq, err = apicompat.ChatCompletionsToResponsesWithOptions(&chatReq, convertOpts)
 		if err != nil {
 			return nil, fmt.Errorf("convert chat completions to responses: %w", err)
 		}
@@ -550,7 +558,7 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID)
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai chat_completions buffered", requestID, targetsDeepSeekNativeResponses(account, upstreamModel))
 	if err != nil {
 		return nil, s.newOpenAICompatBufferedReadFailoverError(c, account, resp, requestID, err)
 	}
@@ -618,7 +626,11 @@ func (s *OpenAIGatewayService) handleChatBufferedStreamingResponse(
 	// accumulated delta events so the client receives the full content.
 	acc.SupplementResponseOutput(finalResponse)
 
-	chatResp := apicompat.ResponsesToChatCompletions(finalResponse, originalModel)
+	var returnOpts *apicompat.ResponsesToChatConversionOptions
+	if targetsDeepSeekNativeResponses(account, upstreamModel) {
+		returnOpts = &apicompat.ResponsesToChatConversionOptions{PreferReasoningContentText: true}
+	}
+	chatResp := apicompat.ResponsesToChatCompletionsWithOptions(finalResponse, originalModel, returnOpts)
 
 	if s.responseHeaderFilter != nil {
 		responseheaders.WriteFilteredHeaders(c.Writer.Header(), resp.Header, s.responseHeaderFilter)
@@ -710,7 +722,11 @@ func (s *OpenAIGatewayService) handleChatStreamingResponse(
 	requestID := resp.Header.Get("x-request-id")
 	writeStreamHeaders := s.newStreamHeaderWriter(c, resp.Header)
 
-	state := apicompat.NewResponsesEventToChatState()
+	var streamOpts *apicompat.ResponsesEventToChatOptions
+	if targetsDeepSeekNativeResponses(account, upstreamModel) {
+		streamOpts = &apicompat.ResponsesEventToChatOptions{PreferReasoningText: true}
+	}
+	state := apicompat.NewResponsesEventToChatStateWithOptions(streamOpts)
 	state.Model = originalModel
 	// 网关作为计费链路的一环，不能把下游 usage 输出绑定到客户端是否显式请求。
 	// raw Chat Completions 直转路径已经强制透出 usage，这里保持同样行为，避免级联代理计费为 0。

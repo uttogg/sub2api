@@ -602,7 +602,10 @@ func (s *OpenAIGatewayService) handleAnthropicBufferedStreamingResponse(
 ) (*OpenAIForwardResult, error) {
 	requestID := resp.Header.Get("x-request-id")
 
-	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai messages buffered", requestID)
+	// Anthropic-messages ingress keeps the historical summary reconstruction;
+	// the DeepSeek thinking-mode replay contract is scoped to the
+	// Chat→native-Responses path handled by openai_gateway_chat_completions.go.
+	finalResponse, usage, acc, err := s.readOpenAICompatBufferedTerminal(resp, c, "openai messages buffered", requestID, false)
 	if err != nil {
 		var readErr *openAICompatBufferedReadError
 		if errors.As(err, &readErr) && readErr != nil {
@@ -774,8 +777,13 @@ func (s *OpenAIGatewayService) readOpenAICompatBufferedTerminal(
 	c *gin.Context,
 	logPrefix string,
 	requestID string,
+	preferReasoningText bool,
 ) (*apicompat.ResponsesResponse, OpenAIUsage, *apicompat.BufferedResponseAccumulator, error) {
-	acc := apicompat.NewBufferedResponseAccumulator()
+	var accOpts *apicompat.BufferedResponseAccumulatorOptions
+	if preferReasoningText {
+		accOpts = &apicompat.BufferedResponseAccumulatorOptions{PreferReasoningText: true}
+	}
+	acc := apicompat.NewBufferedResponseAccumulatorWithOptions(accOpts)
 	var usage OpenAIUsage
 	if resp == nil || resp.Body == nil {
 		return nil, usage, acc, errors.New("upstream response body is nil")
