@@ -85,8 +85,8 @@ RUN pnpm exec vite build --config vite.build-amd64.config.ts
 FROM --platform=${BUILDPLATFORM} ${GOLANG_IMAGE} AS backend-builder
 ARG BUILDPLATFORM
 ARG TARGETPLATFORM
-ARG VERSION=0.2.12
-ARG COMMIT=d6adebd22de00478cd021119ba755f37bcb94fb5-dirty
+ARG VERSION
+ARG COMMIT
 ARG DATE
 ARG GOPROXY
 ARG GOSUMDB
@@ -101,9 +101,9 @@ COPY --from=frontend-builder /app/backend/internal/web/dist ./internal/web/dist
 # Build only the production server. No all-module download, generators or tests.
 RUN --mount=type=cache,id=sub2api-build-amd64-gomod,target=/go/pkg/mod \
     --mount=type=cache,id=sub2api-build-amd64-gobuild,target=/root/.cache/go-build \
-    [ "${VERSION}" = "0.2.12" ] && \
+    [ -n "${VERSION}" ] && \
     [ "$(tr -d '\r' < cmd/server/VERSION)" = "${VERSION}" ] && \
-    [ "${COMMIT}" = "d6adebd22de00478cd021119ba755f37bcb94fb5-dirty" ] && \
+    [ -n "${COMMIT}" ] && \
     DATE_VALUE="${DATE:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" && \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -mod=readonly -p 1 \
     -tags embed \
