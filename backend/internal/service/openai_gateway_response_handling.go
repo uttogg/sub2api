@@ -319,14 +319,15 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			return
 		}
 		errorEventSent = true
-		// Responses error events use top-level code/message/param fields. A nested
-		// Chat Completions error envelope loses the classification in strict clients.
-		payload := `{"type":"error","sequence_number":0,"code":` + strconv.Quote(code) + `,"message":` + strconv.Quote(message) + `,"param":null}`
+		// A bare `error` frame is not a Responses terminal event; strict SDKs keep
+		// waiting for response.completed/failed. Build a nested envelope so the
+		// terminal below carries this error's original code and sanitized message.
+		source := `{"error":{"code":` + strconv.Quote(code) + `,"message":` + strconv.Quote(message) + `}}`
 		if err := flushBuffered(); err != nil {
 			clientDisconnected = true
 			return
 		}
-		if _, err := writePendingString("event: error\ndata: " + payload + "\n\n"); err != nil {
+		if _, err := writePendingString(buildOpenAIResponseFailedSSE(responseID, originalModel, []byte(source), message)); err != nil {
 			clientDisconnected = true
 			return
 		}
@@ -334,9 +335,10 @@ func (s *OpenAIGatewayService) handleStreamingResponseWithReasoning(ctx context.
 			clientDisconnected = true
 			return
 		}
+		failureDelivered = true
 		clientOutputStarted = true
 		lastDownstreamWriteAt = time.Now()
-		// The handler must not append its generic failure after this error event.
+		// The handler must not append its generic failure after this terminal event.
 		MarkResponseCommitted(c)
 	}
 
@@ -1852,22 +1854,24 @@ func buildOpenAIResponseFailedSSE(responseID, model string, source []byte, fallb
 		errorBody["type"] = errorType
 	}
 	response := gin.H{
-		"id":     responseID,
-		"object": "response",
-		"status": "failed",
-		"output": []any{},
-		"error":  errorBody,
+		"id":         responseID,
+		"object":     "response",
+		"created_at": time.Now().Unix(),
+		"status":     "failed",
+		"output":     []any{},
+		"error":      errorBody,
 	}
 	if model = strings.TrimSpace(model); model != "" {
 		response["model"] = model
 	}
 	payload, err := marshalOpenAIUpstreamJSON(gin.H{
-		"type":     "response.failed",
-		"response": response,
+		"type":            "response.failed",
+		"sequence_number": 0,
+		"response":        response,
 	})
 	if err != nil {
 		// All values above are JSON primitives, so this is only a defensive fallback.
-		payload = []byte(`{"type":"response.failed","response":{"status":"failed","output":[],"error":{"code":"upstream_error","message":"Upstream response failed"}}}`)
+		payload = []byte(`{"type":"response.failed","sequence_number":0,"response":{"created_at":` + strconv.FormatInt(time.Now().Unix(), 10) + `,"status":"failed","output":[],"error":{"code":"upstream_error","message":"Upstream response failed"}}}`)
 	}
 	return "event: response.failed\ndata: " + string(payload) + "\n\n"
 }
