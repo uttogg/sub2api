@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -256,6 +257,10 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 			continue
 		}
 		seen[id] = struct{}{}
+		if id == target {
+			projected = append(projected, raw)
+			continue
+		}
 		var entry map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			return nil, err
@@ -270,6 +275,9 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 		}
 		projected = append(projected, encoded)
 	}
+	if slices.EqualFunc(entries, projected, func(a, b json.RawMessage) bool { return bytes.Equal(a, b) }) {
+		return body, nil
+	}
 	envelope[field], err = json.Marshal(projected)
 	if err != nil {
 		return nil, err
@@ -277,10 +285,11 @@ func projectAccountModelsBody(body []byte, account *Account, group *Group, codex
 	return json.Marshal(envelope)
 }
 
-// ApplyPinnedCodexModelsMapping is used by pinned discovery and its scheduler
-// fallback. The ordinary (non-pinned) Codex path retains its local catalog policy.
+// ApplyPinnedCodexModelsMapping projects all remotely discovered Codex catalogs,
+// including ordinary discovery and pinned scheduler fallback. Locally generated
+// catalogs retain their existing policy and do not pass through this function.
 func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Account, group *Group) error {
-	if group == nil || group.Platform != PlatformOpenAI || !group.CodexModelsManifestConfig.Enabled {
+	if group == nil || group.Platform != PlatformOpenAI {
 		return nil
 	}
 	if account.Platform == PlatformAntigravity && account.Type == AccountTypeOAuth {
@@ -301,8 +310,10 @@ func ApplyPinnedCodexModelsMapping(response *OpenAIModelsResponse, account *Acco
 	if err != nil {
 		return err
 	}
-	response.Body = body
-	response.ETag = codexModelsManifestBodyETag(body)
+	if !bytes.Equal(response.Body, body) {
+		response.Body = body
+		response.ETag = codexModelsManifestBodyETag(body)
+	}
 	return nil
 }
 

@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 # Independent HK1 linux/amd64 build; repository manifests and Dockerfile stay intact.
 ARG NODE_IMAGE=node:24-alpine
-ARG GOLANG_IMAGE=golang:1.27.0-alpine
+ARG GOLANG_IMAGE=golang:1.27.2-alpine
 ARG ALPINE_IMAGE=alpine:3.21
 ARG POSTGRES_IMAGE=postgres:18-alpine
 ARG GOPROXY=https://goproxy.cn,direct
