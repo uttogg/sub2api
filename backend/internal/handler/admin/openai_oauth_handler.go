@@ -504,6 +504,14 @@ func (h *OpenAIOAuthHandler) QueryQuota(c *gin.Context) {
 // state: the audit middleware only records mutating verbs, so a persisting GET
 // would mutate the database without an audit trail.
 func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
+	h.refreshQuota(c, true)
+}
+
+func (h *OpenAIOAuthHandler) RefreshQuotaOnly(c *gin.Context) {
+	h.refreshQuota(c, false)
+}
+
+func (h *OpenAIOAuthHandler) refreshQuota(c *gin.Context, notifyAutoTasks bool) {
 	accountID, err := strconv.ParseInt(c.Param("id"), 10, 64)
 	if err != nil {
 		response.BadRequest(c, "Invalid account ID")
@@ -523,7 +531,9 @@ func (h *OpenAIOAuthHandler) RefreshQuota(c *gin.Context) {
 		response.Error(c, http.StatusInternalServerError, "openai quota query returned an empty result")
 		return
 	}
-	service.NotifyOpenAIAutoResetCredit(accountID)
+	if notifyAutoTasks {
+		service.NotifyOpenAIAutoResetCredit(accountID)
+	}
 
 	refreshResponse := openAIQuotaRefreshResponse{OpenAIQuotaUsage: *usage}
 	if err := h.quotaService.CacheCreditsSnapshot(c.Request.Context(), accountID, usage); err != nil {
