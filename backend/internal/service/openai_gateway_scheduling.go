@@ -454,7 +454,7 @@ func openAICompatibleAccountEligibilityFailureReasonBeforeProfit(ctx context.Con
 			if resolveOpenAIAccountUpstreamModelForRequest(account, requestedModel, false) == "" {
 				return "model_not_supported"
 			}
-		} else if !account.IsModelSupported(requestedModel) {
+		} else if !supportsOpenAIRequestModel(account, requestedModel, requireCompact) {
 			return "model_not_supported"
 		}
 	}

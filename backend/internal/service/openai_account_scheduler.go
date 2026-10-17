@@ -1830,7 +1830,7 @@ func (s *defaultOpenAIAccountScheduler) isAccountRequestCompatibleReason(ctx con
 			if resolveOpenAIAccountUpstreamModelForRequest(account, req.RequestedModel, false) == "" {
 				return false, "model_not_supported"
 			}
-		} else if !account.IsModelSupported(req.RequestedModel) {
+		} else if !supportsOpenAIRequestModel(account, req.RequestedModel, req.RequireCompact) {
 			return false, "model_not_supported"
 		}
 	}

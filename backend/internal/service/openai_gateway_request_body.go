@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/apicompat"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ctxkey"
 	"github.com/Wei-Shaw/sub2api/internal/util/urlvalidator"
@@ -1433,7 +1434,12 @@ func normalizeOpenAIResponsesWebSocketCompatibilityBody(body []byte, account *Ac
 	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{ResponsesLite: responsesLite})
 }
 
+func normalizeOpenAIResponsesWebSocketCompatibilityBodyWithConfig(cfg *config.Config, body []byte, account *Account, responsesLite bool) ([]byte, bool, error) {
+	return normalizeOpenAIResponsesCompatibilityBodyWithOptions(body, account, openAIResponsesCompatibilityOptions{Config: cfg, ResponsesLite: responsesLite})
+}
+
 type openAIResponsesCompatibilityOptions struct {
+	Config        *config.Config
 	ResponsesLite bool
 	// Compact marks the /responses/compact wire shape, which is left as-is
 	// by request-shape compatibility rewrites such as web_search history.
@@ -1455,7 +1461,7 @@ func normalizeOpenAIResponsesCompatibilityBodyWithOptions(body []byte, account *
 		return body, false, err
 	}
 	if account.IsOpenAIOAuthLike() {
-		if next, legacyChanged, legacyErr := normalizeOpenAIResponsesLegacyIngress(normalized); legacyErr != nil {
+		if next, legacyChanged, legacyErr := normalizeOpenAIResponsesLegacyIngressWithConfig(opts.Config, normalized); legacyErr != nil {
 			return body, false, legacyErr
 		} else if legacyChanged {
 			normalized = next

@@ -235,9 +235,9 @@ func (s *OpenAIGatewayService) forwardAsChatCompletions(
 		// the assistant reasoning must be replayed as a native reasoning item
 		// whose content holds the full reasoning_text. Other providers keep the
 		// legacy inline "<thinking>" behavior.
-		var convertOpts *apicompat.ChatCompletionsToResponsesRequestOptions
+		convertOpts := &apicompat.ChatCompletionsToResponsesRequestOptions{MinOutputTokens: configuredMinOutputTokens(s.cfg)}
 		if targetsDeepSeekNativeResponses(account, upstreamModel) {
-			convertOpts = &apicompat.ChatCompletionsToResponsesRequestOptions{DeepSeekNativeReasoning: true}
+			convertOpts.DeepSeekNativeReasoning = true
 		}
 		responsesReq, err = apicompat.ChatCompletionsToResponsesWithOptions(&chatReq, convertOpts)
 		if err != nil {

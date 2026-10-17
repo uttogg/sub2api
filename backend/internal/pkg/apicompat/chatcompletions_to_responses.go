@@ -18,6 +18,8 @@ type chatMessageContent struct {
 // conversion. (The name is distinct from ChatCompletionsToResponsesOptions,
 // which carries response-side return policies in chatcompletions_responses_bridge.go.)
 type ChatCompletionsToResponsesRequestOptions struct {
+	// MinOutputTokens sets the max_output_tokens floor; zero uses the default.
+	MinOutputTokens int
 	// DeepSeekNativeReasoning emits assistant reasoning_content as a native
 	// Responses reasoning item whose content holds the full reasoning_text.
 	// DeepSeek's thinking mode rejects histories that do not pass the
@@ -34,9 +36,19 @@ func ChatCompletionsToResponses(req *ChatCompletionsRequest) (*ResponsesRequest,
 	return ChatCompletionsToResponsesWithOptions(req, nil)
 }
 
+// ChatCompletionsToResponsesWithMinOutputTokens converts a Chat Completions
+// request using the supplied max_output_tokens floor.
+func ChatCompletionsToResponsesWithMinOutputTokens(req *ChatCompletionsRequest, minOutputTokens int) (*ResponsesRequest, error) {
+	return ChatCompletionsToResponsesWithOptions(req, &ChatCompletionsToResponsesRequestOptions{MinOutputTokens: minOutputTokens})
+}
+
 // ChatCompletionsToResponsesWithOptions is ChatCompletionsToResponses with
 // provider-scoped policies (see ChatCompletionsToResponsesRequestOptions).
 func ChatCompletionsToResponsesWithOptions(req *ChatCompletionsRequest, opts *ChatCompletionsToResponsesRequestOptions) (*ResponsesRequest, error) {
+	minOutputTokens := DefaultMinMaxOutputTokens
+	if opts != nil && opts.MinOutputTokens > 0 {
+		minOutputTokens = opts.MinOutputTokens
+	}
 	if err := openai.ValidateGPT61SolReasoningEffort(req.Model, req.ReasoningEffort); err != nil {
 		return nil, err
 	}
@@ -81,8 +93,8 @@ func ChatCompletionsToResponsesWithOptions(req *ChatCompletionsRequest, opts *Ch
 	}
 	if maxTokens > 0 {
 		v := maxTokens
-		if v < minMaxOutputTokens {
-			v = minMaxOutputTokens
+		if v < minOutputTokens {
+			v = minOutputTokens
 		}
 		out.MaxOutputTokens = &v
 	}
