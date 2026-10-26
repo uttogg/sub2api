@@ -93,3 +93,9 @@ jobs:
       - run: python -m pip install -r .github/release-tools/requirements-release.txt
       - run: python -m unittest discover -s .github/release-tools -p 'test_release_matrix.py'
       - run: bash -n .github/release-tools/release-images.sh
+      - name: Check VPS deploy script
+        run: |
+          python3 -m py_compile deploy/vps/deploy.py deploy/vps/test_deploy.py
+          python3 -m unittest discover -s deploy/vps -p 'test_*.py'
+          python3 deploy/vps/deploy.py --help
+          python3 deploy/vps/deploy.py --dry-run
