@@ -1,0 +1,123 @@
+name: Production image
+
+on:
+  push:
+    branches:
+      - main
+      # Temporary so this branch can publish once before merge. Removed after
+      # the proof run; the workflow that remains triggers only on main.
+      - cursor/ghcr-vps-deploy-cfc3
+  workflow_dispatch:
+
+concurrency:
+  group: production-image-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  # buildx GHA cache writes through the Actions cache API.
+  actions: write
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Lint and dry-run the VPS deploy script
+        run: |
+          python3 -m py_compile deploy/vps/deploy.py deploy/vps/test_deploy.py
+          python3 -m unittest discover -s deploy/vps -p 'test_*.py'
+          python3 deploy/vps/deploy.py --help
+          python3 deploy/vps/deploy.py --dry-run
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - name: Resolve version and tags
+        id: meta
+        env:
+          REF: ${{ github.ref }}
+          SHA: ${{ github.sha }}
+          OWNER: ${{ github.repository_owner }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          version=$(tr -d '[:space:]' < backend/cmd/server/VERSION)
+          if [[ -z "$version" ]]; then
+            echo "VERSION file is empty" >&2
+            exit 1
+          fi
+          short=$(git rev-parse --short=7 HEAD)
+          date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          image="ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/sub2api"
+          {
+            echo "version=${version}"
+            echo "short=${short}"
+            echo "date=${date}"
+            echo "image=${image}"
+          } >> "$GITHUB_OUTPUT"
+          delimiter="TAGS_$(openssl rand -hex 8)"
+          {
+            echo "tags<<${delimiter}"
+            echo "${image}:${SHA}"
+            echo "${image}:${short}"
+            echo "${image}:${version}-${short}"
+            if [[ "$REF" == "refs/heads/main" ]]; then
+              echo "${image}:latest"
+            fi
+            echo "${delimiter}"
+          } >> "$GITHUB_OUTPUT"
+          echo "source=https://github.com/${REPOSITORY}" >> "$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Login to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push linux/amd64
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.build-amd64
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            COMMIT=${{ github.sha }}
+            DATE=${{ steps.meta.outputs.date }}
+            GOPROXY=https://proxy.golang.org,direct
+            GOSUMDB=sum.golang.org
+          labels: |
+            org.opencontainers.image.source=${{ steps.meta.outputs.source }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.meta.outputs.version }}
+            org.opencontainers.image.created=${{ steps.meta.outputs.date }}
+            org.opencontainers.image.title=sub2api
+            org.opencontainers.image.description=Sub2API - AI API Gateway Platform
+      - name: Summarize
+        env:
+          IMAGE: ${{ steps.meta.outputs.image }}
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: |
+          {
+            echo "### Production image"
+            echo
+            echo '```'
+            printf '%s\n' "$TAGS"
+            echo '```'
+            echo
+            echo "Package: https://github.com/${{ github.repository }}/pkgs/container/sub2api"
+          } >> "$GITHUB_STEP_SUMMARY"

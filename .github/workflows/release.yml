@@ -34,6 +34,10 @@ env:
 
 jobs:
   prepare:
+    # Upstream tag publishing (GitHub Releases, multi-arch GHCR, Docker Hub).
+    # Forks publish the production linux/amd64 image from production-image.yml,
+    # so this workflow does not run where those release secrets are absent.
+    if: github.repository == 'Wei-Shaw/sub2api'
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.plan.outputs.sha }}
