@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - main
-      # Temporary so this branch can publish once before merge. Removed after
-      # the proof run; the workflow that remains triggers only on main.
-      - cursor/ghcr-vps-deploy-cfc3
   workflow_dispatch:
 
 concurrency:
