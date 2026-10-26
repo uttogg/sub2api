@@ -227,6 +227,9 @@ func (s *AntigravityGatewayService) prepareAntigravityCompatCall(
 	thinkingEnabled := claudeRequest.Thinking != nil &&
 		(claudeRequest.Thinking.Type == "enabled" || claudeRequest.Thinking.Type == "adaptive")
 	mappedModel = applyThinkingModelSuffix(mappedModel, thinkingEnabled)
+	if geminiImageGenerationDenied(c, nil, request.originalModel, mappedModel) {
+		return nil, s.writeAntigravityCompatError(c, http.StatusBadRequest, "invalid_request_error", ImageGenerationPermissionMessage())
+	}
 
 	// 压缩准备只在最终映射到 Gemini 的 Antigravity Responses 请求上启用；
 	// Antigravity Claude 保持既有转换与错误语义。
