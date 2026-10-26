@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+      # Present only so this branch can publish before the workflow exists on
+      # main. The follow-up commit removes it.
+      - cursor/ghcr-vps-deploy-cfc3
   workflow_dispatch:
 
 concurrency:
@@ -79,9 +82,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      # Alpine apk index fetches occasionally fail with a TLS error on hosted
+      # runners. Retry the same build; failed steps are not cached.
       - name: Build and push linux/amd64
+        id: push
+        continue-on-error: true
         uses: docker/build-push-action@v7
-        with:
+        with: &image
           context: .
           file: Dockerfile.build-amd64
           platforms: linux/amd64
@@ -104,7 +111,19 @@ jobs:
             org.opencontainers.image.created=${{ steps.meta.outputs.date }}
             org.opencontainers.image.title=sub2api
             org.opencontainers.image.description=Sub2API - AI API Gateway Platform
+      - name: Retry image build
+        id: retry
+        if: steps.push.outcome == 'failure'
+        continue-on-error: true
+        uses: docker/build-push-action@v7
+        with: *image
+      - name: Retry image build again
+        id: retry_again
+        if: steps.push.outcome == 'failure' && steps.retry.outcome == 'failure'
+        uses: docker/build-push-action@v7
+        with: *image
       - name: Summarize
+        if: steps.push.outcome == 'success' || steps.retry.outcome == 'success' || steps.retry_again.outcome == 'success'
         env:
           IMAGE: ${{ steps.meta.outputs.image }}
           TAGS: ${{ steps.meta.outputs.tags }}
