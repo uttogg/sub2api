@@ -34,17 +34,16 @@ The candidate applies migrations to the shared database before traffic moves. Ke
 
 ## Registry login
 
-The GHCR package is private unless its visibility has been changed. On the VPS, as the same user that runs the deploy:
+`ghcr.io/uttogg/sub2api` is a public package, so the VPS can `docker pull` it with no token. If the package is later made private, log in once as the user that runs the deploy. Use a classic PAT, or a fine-grained token, with `read:packages` on `uttogg/sub2api`:
 
 ```bash
 umask 077
 mkdir -p /root/.config
-# classic PAT, or fine-grained token, with read:packages on uttogg/sub2api
 editor /root/.config/ghcr-token
 docker login ghcr.io -u uttogg --password-stdin < /root/.config/ghcr-token
 ```
 
-`docker login` stores credentials in the root Docker config. Later `docker pull`s from cron reuse them. The deploy script never takes the token on the command line.
+`docker login` stores credentials in the root Docker config. Later pulls from cron reuse them. The deploy script never takes the token on the command line.
 
 A daily run, once the script is installed:
 
