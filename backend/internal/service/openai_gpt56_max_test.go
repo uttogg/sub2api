@@ -67,10 +67,13 @@ func TestNormalizeOpenAIReasoningEffortForMaxCapableModels(t *testing.T) {
 		{name: "Astra 保留 max", raw: "max", model: "gpt-6-astra", want: "max"},
 		{name: "Sol 保留 max", raw: "max", model: "gpt-5.6-sol", want: "max"},
 		{name: "Terra 保留 max", raw: "max", model: "openai/gpt-5.6-terra", want: "max"},
+		{name: "GPT-6.1 Terra 保留 max", raw: "max", model: "gpt-6.1-terra", want: "max"},
+		{name: "GPT-6.1 Terra 别名保留 max", raw: "max", model: "openai/GPT-6.1-Terra-max", want: "max"},
 		{name: "Luna 后缀保留 max", raw: "max", model: "gpt-5.6-luna-2026-07-09", want: "max"},
 		{name: "DeepSeek V4 保留 max", raw: "max", model: "deepseek-v4-pro", want: "max"},
 		{name: "DeepSeek Flash 保留 max", raw: "max", model: "deepseek-flash", want: "max"},
 		{name: "旧 GPT 模型沿用 xhigh", raw: "max", model: "gpt-5.5", want: "xhigh"},
+		{name: "GPT-6.1 Sol 仍保留 max", raw: "max", model: "gpt-6.1-sol", want: "max"},
 	}
 
 	for _, tt := range tests {
