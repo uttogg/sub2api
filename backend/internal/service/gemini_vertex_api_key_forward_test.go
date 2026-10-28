@@ -10,7 +10,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Wei-Shaw/sub2api/internal/config"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/tlsfingerprint"
@@ -102,16 +101,6 @@ func TestGeminiForwardAsChatCompletions_VertexAPIKeyUsesAPIKeyHeader(t *testing.
 	requireVertexAPIKeyAuth(t, httpStub.lastReq)
 }
 
-type geminiBoundCacheRateLimitRepo struct {
-	errorPolicyRepoStub
-	rateLimitedCalls int
-}
-
-func (r *geminiBoundCacheRateLimitRepo) SetRateLimited(context.Context, int64, time.Time) error {
-	r.rateLimitedCalls++
-	return nil
-}
-
 type geminiVertex429SequenceUpstream struct {
 	responses []*http.Response
 	calls     int
@@ -155,7 +144,7 @@ func TestGeminiForwardNative_VertexSharedCapacity429RetriesSameAccountWithoutCoo
 			repo := &geminiBoundCacheRateLimitRepo{}
 			svc := &GeminiMessagesCompatService{
 				httpUpstream:     upstream,
-				cfg:              &config.Config{},
+				cfg:              &config.Config{Gateway: config.GatewayConfig{MaxSameAccountRetriesGemini: 1}},
 				accountRepo:      repo,
 				rateLimitService: NewRateLimitService(repo, nil, &config.Config{}, nil, nil),
 			}
