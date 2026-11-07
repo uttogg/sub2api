@@ -8,6 +8,10 @@
 
 ### 上游同步
 
+- 2026-11-07：合并 Sub2API v0.2.20 上游更新（标签 `v0.2.20`：dab829a4e9b7d1cc307189aea8b0319eb29e29d0；标签后的 VERSION 同步提交 6b4b37db43443b5e88e424fe3c69602cc3810dfb）。服务版本同步为 0.2.20。
+- 自上次已同步的上游提交 4a4a83ee 起，纳入注册邮箱精确黑名单、OpenAI 生图 1K/2K/4K 尺寸分流、GPT Image 2.6 原生图片链路、网关请求体内存预算与读写超时、GPT-6.1 Terra 官方 Codex 描述与 effort 校验、Antigravity 配额窗口与连接测试提示词、以及网关热路径与多项协议修复。管理 MCP 与管理员密钥细粒度权限已在此前同步进入本分叉，本次版本号与之对齐。
+- 保留分叉平台、Dockerfile.build-amd64、GHCR production-image 工作流、deploy/vps、Release 工作流仓库门禁、GPT-6.1 Terra / max reasoning effort、明文协作标记、DeepSeek 原生推理回放，以及 `openai.quota.read` 上的额度 `refresh-only`（受限密钥走 scopedOpenAIQuota，不通知自动重置任务）。
+- 按项目测试禁令未恢复分叉已删除的测试文件（含 gemini_compat_thinking_test.go、openai_subscription_long_context_test.go、gateway_anthropic_base_url_test.go、ops_error_logger_google_test.go）。新测试若只依赖这些文件中的辅助函数，仅补回辅助函数本身。未执行完整测试套件。后端 `go build ./...` 通过。
 - 合并 Sub2API v0.2.17 上游更新（2026-10-17；上游 main：b0a02a3304a0a78cdd003ddda1dd23ba02c03084）。
 - 包含 v0.2.17 标签提交 `060d0160417782cd962a0c7f460f6cd4565d4916` 及标签后的 VERSION 同步提交；服务版本同步为 0.2.17。
 - 同步 Gemini 4 Argon 模型与计费、兼容入口思考档位及摘要、Vertex 账号错误和共享容量重试、Antigravity 工具结果与模型目录、可配置最小输出 token、OpenAI 按工作区导入与模型停用判定、Messages web_search、Responses created_at、支付订单核验与退款保留扣减，以及账号筛选和支付页面修复。
