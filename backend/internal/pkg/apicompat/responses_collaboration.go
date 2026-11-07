@@ -378,7 +378,7 @@ func responsesCollaborationMessageText(content any, param string) (string, bool,
 		return "", false, invalid(param)
 	}
 	// Keep this extraction in the same order as the Chat bridge helper.
-	text := agentMessageText(raw)
+	text := AgentMessageText(raw)
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return "", false, nil

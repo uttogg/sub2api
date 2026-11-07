@@ -49,7 +49,7 @@ func ChatCompletionsToResponsesWithOptions(req *ChatCompletionsRequest, opts *Ch
 	if opts != nil && opts.MinOutputTokens > 0 {
 		minOutputTokens = opts.MinOutputTokens
 	}
-	if err := openai.ValidateGPT61SolReasoningEffort(req.Model, req.ReasoningEffort); err != nil {
+	if err := openai.ValidateGPT61ReasoningEffort(req.Model, req.ReasoningEffort); err != nil {
 		return nil, err
 	}
 	input, err := convertChatMessagesToResponsesInput(req.Messages, opts)
