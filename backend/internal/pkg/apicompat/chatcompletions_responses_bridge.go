@@ -1408,14 +1408,15 @@ func ChatCompletionsResponseToResponsesWithOptions(resp *ChatCompletionsResponse
 	return out
 }
 
-func plaintextCollaborationFunctionArgs(enabled bool, namespace, name string) *[]json.RawMessage {
+func plaintextCollaborationFunctionArgs(enabled bool, namespace, name string) json.RawMessage {
 	if !enabled || namespace != "collaboration" {
 		return nil
 	}
 	switch name {
 	case "spawn_agent", "send_message", "followup_task":
-		args := []json.RawMessage{}
-		return &args
+		// Empty array, not an omitted field: the client treats a missing
+		// marker as "encryption unspecified" and a null as sealed.
+		return json.RawMessage("[]")
 	default:
 		return nil
 	}

@@ -8,6 +8,10 @@
 
 ### 上游同步
 
+- 2026-11-11：合并 Sub2API v0.2.21 上游更新（标签 `v0.2.21`：10ba8f9b4dc2e6023d4a9879ab77b21841babd10；标签后的 VERSION 同步提交 6dd5a045b62e27e5b5b139adef91a171097f639b）。服务版本同步为 0.2.21。
+- 自上次已同步的上游提交 6b4b37db 起，纳入 Claude Fable / Mythos 5.2 与定价、OpenAI 缓存写入 30m/12h TTL、Responses 非法 UTF-8 拒绝、密封 function call 元数据保留、Codex page context 规范化、请求体内存预算按内存上限自动缩放、EasyPay 退款成功码、Pro Argon 配额隔离、WebSocket 搜索激活与 TTFT、账号刷新稳定性、余额充值倍率 6 位小数，以及多项网关与计费修复。
+- 保留分叉平台、Dockerfile.build-amd64、GHCR production-image 工作流、deploy/vps、Release 工作流仓库门禁、GPT-6.1 Terra / max reasoning effort、明文协作标记、DeepSeek 原生推理回放，以及 `openai.quota.read` 上的额度 `refresh-only`。
+- `ResponsesOutput.EncryptedFunctionArgs` 采用上游 `json.RawMessage`，以保留显式 `null` 与 `[]`；分叉明文协作仍对 collaboration 工具写入 `[]`，不再使用会把 `null` 省略掉的指针切片。未恢复分叉已省略的 `TestTransformClaudeToGemini_ToolResultImagesReachUpstream` 与 UsageTable 输出 TPS 测试；OpenAI 缓存写入分桶测试并入现有 UsageTable 规格。后端 `go build ./...` 通过，`go test -tags=unit -run '^$' ./...` 除合并前已无法编译的 `opencode_go_test.go` 外均通过。`internal/pkg/apicompat`（除合并前已失败的 `TestStreamingReasoning`）与 `internal/pkg/antigravity` 测试通过，`TestOpenAIResponsesSealedFunctionCallRoundTrip` 通过。前端 `vue-tsc --noEmit` 通过。未执行完整测试套件。
 - 2026-11-07：合并 Sub2API v0.2.20 上游更新（标签 `v0.2.20`：dab829a4e9b7d1cc307189aea8b0319eb29e29d0；标签后的 VERSION 同步提交 6b4b37db43443b5e88e424fe3c69602cc3810dfb）。服务版本同步为 0.2.20。
 - 自上次已同步的上游提交 4a4a83ee 起，纳入注册邮箱精确黑名单、OpenAI 生图 1K/2K/4K 尺寸分流、GPT Image 2.6 原生图片链路、网关请求体内存预算与读写超时、GPT-6.1 Terra 官方 Codex 描述与 effort 校验、Antigravity 配额窗口与连接测试提示词、以及网关热路径与多项协议修复。管理 MCP 与管理员密钥细粒度权限已在此前同步进入本分叉，本次版本号与之对齐。
 - 保留分叉平台、Dockerfile.build-amd64、GHCR production-image 工作流、deploy/vps、Release 工作流仓库门禁、GPT-6.1 Terra / max reasoning effort、明文协作标记、DeepSeek 原生推理回放，以及 `openai.quota.read` 上的额度 `refresh-only`（受限密钥走 scopedOpenAIQuota，不通知自动重置任务）。
