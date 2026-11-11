@@ -417,10 +417,11 @@ type ResponsesOutput struct {
 	Arguments string `json:"arguments,omitempty"`
 	// 来源为 namespace 子工具时的归属命名空间（codex 按 namespace+name 路由该调用）。
 	Namespace string `json:"namespace,omitempty"`
-
-	// nil leaves the encryption policy unspecified; a pointer to an empty
-	// slice explicitly tells the client that no function arguments are encrypted.
-	EncryptedFunctionArgs *[]json.RawMessage `json:"encrypted_function_args,omitempty"`
+	// Preserve the upstream encryption marker exactly, including explicit null
+	// and []. Omitting either makes sealed arguments look like plaintext.
+	// Plaintext collaboration writes [] for collaboration tools that must
+	// declare unencrypted arguments. Nil omits the field.
+	EncryptedFunctionArgs json.RawMessage `json:"encrypted_function_args,omitempty"`
 
 	// type=custom_tool_call（custom/freeform 工具，input 为自由文本）
 	Input string `json:"input,omitempty"`

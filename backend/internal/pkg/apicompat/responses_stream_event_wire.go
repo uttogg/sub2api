@@ -184,8 +184,8 @@ func responsesItemWire(item *ResponsesOutput) map[string]any {
 		m["call_id"] = item.CallID
 		m["name"] = item.Name
 		m["arguments"] = item.Arguments
-		if item.EncryptedFunctionArgs != nil {
-			m["encrypted_function_args"] = *item.EncryptedFunctionArgs
+		if len(item.EncryptedFunctionArgs) > 0 {
+			m["encrypted_function_args"] = item.EncryptedFunctionArgs
 		}
 		// namespace 子工具的还原调用：codex 按 namespace+name 路由，缺少该字段
 		// 会被判为 unsupported call。
