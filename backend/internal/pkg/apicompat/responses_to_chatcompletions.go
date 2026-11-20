@@ -73,6 +73,18 @@ func ResponsesToChatCompletionsWithOptions(resp *ResponsesResponse, model string
 					Arguments: item.Arguments,
 				},
 			})
+		case "custom_tool_call":
+			if !resp.RenderCustomToolCalls || (resp.XAIServerSideSearch && IsServerSideSearchCall(item.Type, item.CallID)) {
+				continue
+			}
+			toolCalls = append(toolCalls, ChatToolCall{
+				ID:   item.CallID,
+				Type: "function",
+				Function: ChatFunctionCall{
+					Name:      item.Name,
+					Arguments: item.Input,
+				},
+			})
 		case "reasoning":
 			if opts != nil && opts.PreferReasoningContentText {
 				// DeepSeek's thinking-mode replay needs the full reasoning_text.
@@ -864,6 +876,9 @@ func (p *bufferedReasoningPart) effectiveText() string {
 // so that non-streaming handlers can reconstruct output when the terminal event
 // (response.completed / response.done) carries an empty output array.
 type BufferedResponseAccumulator struct {
+	// tool_search_call items arrive complete on output_item.done.
+	toolSearchCalls []ResponsesOutput
+
 	text                 strings.Builder
 	refusal              strings.Builder
 	reasoning            strings.Builder
@@ -981,6 +996,10 @@ func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) 
 			p.setFull(event.Text)
 		}
 	case "response.output_item.done":
+		// tool_search_call items arrive complete on output_item.done.
+		if event.Item != nil && event.Item.Type == "tool_search_call" {
+			a.toolSearchCalls = append(a.toolSearchCalls, *event.Item)
+		}
 		// Capture full reasoning payloads (and summaries) delivered only in
 		// the terminal item, keeping per-item/per-part identity.
 		if a.preferReasoningText && event.Item != nil && event.Item.Type == "reasoning" {
@@ -1016,7 +1035,7 @@ func (a *BufferedResponseAccumulator) ProcessEvent(event *ResponsesStreamEvent) 
 
 // HasContent reports whether any content has been accumulated.
 func (a *BufferedResponseAccumulator) HasContent() bool {
-	if a.text.Len() > 0 || a.refusal.Len() > 0 || len(a.funcCalls) > 0 || a.reasoning.Len() > 0 || a.reasoningSummary.Len() > 0 {
+	if a.text.Len() > 0 || a.refusal.Len() > 0 || len(a.funcCalls) > 0 || len(a.toolSearchCalls) > 0 || a.reasoning.Len() > 0 || a.reasoningSummary.Len() > 0 {
 		return true
 	}
 	for _, it := range a.reasoningItems {
@@ -1085,6 +1104,7 @@ func (a *BufferedResponseAccumulator) BuildOutput() []ResponsesOutput {
 			Arguments:             a.funcCalls[i].Args.String(),
 		})
 	}
+	out = append(out, a.toolSearchCalls...)
 
 	return out
 }
